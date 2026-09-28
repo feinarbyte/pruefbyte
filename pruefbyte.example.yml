@@ -1,0 +1,49 @@
+# Global pruefbyte configuration (pass with --config or PRUEFBYTE_CONFIG).
+# Every key can also be set as PRUEFBYTE_<SECTION>_<KEY>, e.g. PRUEFBYTE_REVIEW_MAX_COMMENTS=10.
+# Precedence: defaults < this file < .pruefbyte.yml at the MR's base commit < env vars.
+
+gitlab:
+  url: ""                             # default: CI_SERVER_URL
+  token_env: PRUEFBYTE_GITLAB_TOKEN   # env var holding the bot's PAT
+
+llm:
+  provider: anthropic                 # any OCR built-in provider; other names are custom providers
+  model: claude-sonnet-5
+  api_key_env: PRUEFBYTE_LLM_API_KEY  # env var holding the API key
+  url: ""                             # base URL override; required for custom providers
+  protocol: ""                        # custom providers: anthropic | openai | openai-responses | anthropic-bedrock
+  timeout_sec: 0
+  extra_body: {}                      # e.g. {thinking: {type: disabled}}
+  extra_headers: {}
+  aws_region: ""                      # bedrock only
+  aws_profile: ""
+
+ocr:
+  binary: ocr
+  effort: medium                      # low | medium | high (review rounds)
+  language: English                   # language of the comments
+  timeout: 30m                        # whole OCR run
+  concurrency: 8
+  max_tokens_budget: 0                # 0 = unlimited
+  exclude: []                         # gitignore-style patterns
+  rules: []                           # [{path: "**/*.go", rule: "Errors must be wrapped with %w"}]
+  rule_file: ""                       # or an OCR rule.json in the repo
+  use_mr_description_as_background: true
+  extra_args: []                      # passed verbatim to `ocr review`
+
+review:
+  min_severity: low                   # low | medium | high | critical
+  categories: []                      # bug, security, performance, maintainability, test, style, documentation, other
+  max_comments: 30                    # 0 = unlimited; the rest go to the summary note
+  suggestions: true                   # GitLab "apply suggestion" blocks
+  resolve_outdated: true              # resolve own threads once the flagged code changed
+  fail_on_severity: ""                # e.g. critical: fail the job (exit 3)
+  post_failures: true                 # post a note when the review fails
+
+skip:
+  drafts: true
+  labels: [no-review]
+  authors: []
+  title_regex: ['^\[WIP\]']
+  source_branches: []                 # exact names or regexes
+  target_branches: []
