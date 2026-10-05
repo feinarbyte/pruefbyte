@@ -195,6 +195,7 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 		return err
 	}
 	defer runner.Close()
+	runner.SecretEnv = []string{base.GitLab.TokenEnv, base.LLM.APIKeyEnv}
 	v, err := runner.Version(ctx)
 	if err != nil {
 		return err
@@ -226,17 +227,18 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 			if err := cfg.ApplyEnv(os.LookupEnv); err != nil {
 				return cfg, err
 			}
-			if err := cfg.Validate(); err != nil {
-				return cfg, err
-			}
+			return cfg, cfg.Validate()
+		},
+		PrepareOCR: func(ctx context.Context, cfg config.Config) error {
 			if apiKey == "" && cfg.LLM.Provider != "bedrock" {
 				fmt.Fprintf(os.Stderr, "[pruefbyte] warning: %s is empty; ocr falls back to the provider's own env var\n", cfg.LLM.APIKeyEnv)
 			}
-			return cfg, runner.Configure(ctx, cfg.LLM, apiKey, cfg.OCR.Language)
+			return runner.Configure(ctx, cfg.LLM, apiKey, cfg.OCR.Language)
 		},
 		EnsureCommits: func(ctx context.Context, shas ...string) error {
 			return repo.EnsureCommits(ctx, []string{fmt.Sprintf("refs/merge-requests/%d/head", mrc.MRIID)}, shas...)
 		},
+		ReadFileAt: repo.ShowFile,
 		Redact: func(s string) string {
 			for _, secret := range []string{apiKey, token} {
 				if len(secret) >= 4 {

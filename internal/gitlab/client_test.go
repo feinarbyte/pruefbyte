@@ -53,6 +53,23 @@ func TestCreateDiscussionPayload(t *testing.T) {
 	}
 }
 
+func TestCreateIsNotResentAfter5xx(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++ // GitLab may have stored the note before failing
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"500 Internal Server Error"}`))
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL+"/api/v4", "t", "1", 1)
+	if err := c.CreateDiscussion(context.Background(), "x", &Position{NewPath: "a", NewLine: 1}); err == nil {
+		t.Fatal("500 reported as success")
+	}
+	if posts != 1 {
+		t.Errorf("discussion POSTed %d times", posts)
+	}
+}
+
 func TestIsBadRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

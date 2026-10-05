@@ -6,24 +6,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 
 	gl "gitlab.com/gitlab-org/api/client-go"
 )
 
 type MR struct {
-	IID          int64
-	Title        string
-	Description  string
-	SourceBranch string
-	TargetBranch string
-	Author       string
-	Draft        bool
-	Labels       []string
-	WebURL       string
-	BaseSHA      string
-	StartSHA     string
-	HeadSHA      string
+	IID         int64
+	Title       string
+	Description string
+	WebURL      string
+	BaseSHA     string
+	StartSHA    string
+	HeadSHA     string
 }
 
 type FileDiff struct {
@@ -76,13 +72,29 @@ type Client struct {
 }
 
 // New creates a client authenticated with the bot's personal access token.
-// client-go retries 429 and 5xx responses with backoff.
+// client-go retries 429 and 5xx responses with backoff; requests that create
+// notes use retryCreate instead.
 func New(baseURL, token, project string, mrIID int64) (*Client, error) {
 	c, err := gl.NewClient(token, gl.WithBaseURL(baseURL))
 	if err != nil {
 		return nil, err
 	}
 	return &Client{gl: c, project: project, mrIID: mrIID}, nil
+}
+
+// retryCreate is the retry policy for requests that create a note. client-go
+// retries 5xx for every method, but GitLab can answer 5xx after it stored the
+// note (e.g. a 500 when it fails to build the note's diff file), and resending
+// posts it again. Only rate limiting and connection failures are retried.
+func retryCreate(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err != nil {
+		var op *net.OpError
+		return errors.As(err, &op) && op.Op == "dial", nil
+	}
+	return resp.StatusCode == http.StatusTooManyRequests, nil
 }
 
 // IsBadRequest reports whether err is a GitLab 400, which is how GitLab rejects
@@ -106,20 +118,13 @@ func (c *Client) GetMR(ctx context.Context) (*MR, error) {
 		return nil, fmt.Errorf("fetching merge request !%d: %w", c.mrIID, err)
 	}
 	mr := &MR{
-		IID:          m.IID,
-		Title:        m.Title,
-		Description:  m.Description,
-		SourceBranch: m.SourceBranch,
-		TargetBranch: m.TargetBranch,
-		Draft:        m.Draft,
-		Labels:       m.Labels,
-		WebURL:       m.WebURL,
-		BaseSHA:      m.DiffRefs.BaseSha,
-		StartSHA:     m.DiffRefs.StartSha,
-		HeadSHA:      m.DiffRefs.HeadSha,
-	}
-	if m.Author != nil {
-		mr.Author = m.Author.Username
+		IID:         m.IID,
+		Title:       m.Title,
+		Description: m.Description,
+		WebURL:      m.WebURL,
+		BaseSHA:     m.DiffRefs.BaseSha,
+		StartSHA:    m.DiffRefs.StartSha,
+		HeadSHA:     m.DiffRefs.HeadSha,
 	}
 	return mr, nil
 }
@@ -190,13 +195,13 @@ func (c *Client) CreateDiscussion(ctx context.Context, body string, pos *Positio
 		}
 		opt.Position = po
 	}
-	_, _, err := c.gl.Discussions.CreateMergeRequestDiscussion(c.project, c.mrIID, opt, gl.WithContext(ctx))
+	_, _, err := c.gl.Discussions.CreateMergeRequestDiscussion(c.project, c.mrIID, opt, gl.WithContext(ctx), gl.WithRequestRetry(retryCreate))
 	return err
 }
 
 func (c *Client) CreateNote(ctx context.Context, body string) error {
 	_, _, err := c.gl.Notes.CreateMergeRequestNote(c.project, c.mrIID,
-		&gl.CreateMergeRequestNoteOptions{Body: gl.Ptr(body)}, gl.WithContext(ctx))
+		&gl.CreateMergeRequestNoteOptions{Body: gl.Ptr(body)}, gl.WithContext(ctx), gl.WithRequestRetry(retryCreate))
 	return err
 }
 
@@ -209,7 +214,7 @@ func (c *Client) UpdateNote(ctx context.Context, noteID int64, body string) erro
 func (c *Client) ReplyAndResolve(ctx context.Context, discussionID, body string) error {
 	if body != "" {
 		if _, _, err := c.gl.Discussions.AddMergeRequestDiscussionNote(c.project, c.mrIID, discussionID,
-			&gl.AddMergeRequestDiscussionNoteOptions{Body: gl.Ptr(body)}, gl.WithContext(ctx)); err != nil {
+			&gl.AddMergeRequestDiscussionNoteOptions{Body: gl.Ptr(body)}, gl.WithContext(ctx), gl.WithRequestRetry(retryCreate)); err != nil {
 			return err
 		}
 	}

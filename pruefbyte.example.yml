@@ -26,24 +26,19 @@ ocr:
   concurrency: 8
   max_tokens_budget: 0                # 0 = unlimited
   exclude: []                         # gitignore-style patterns
-  rules: []                           # [{path: "**/*.go", rule: "Errors must be wrapped with %w"}]
-  rule_file: ""                       # or an OCR rule.json in the repo
+  rules: []                           # [{path: "**/*.go", rule: "Errors must be wrapped with %w", merge_system_rule: true}]; without merge_system_rule a rule replaces OCR's built-in rule for matching files
+  rule_file: ""                       # or an OCR rule.json in the repo (read at the MR's base commit)
   use_mr_description_as_background: true
   extra_args: []                      # passed verbatim to `ocr review`
 
 review:
   min_severity: low                   # low | medium | high | critical
   categories: []                      # bug, security, performance, maintainability, test, style, documentation, other
-  max_comments: 30                    # 0 = unlimited; the rest go to the summary note
+  max_comments: 30                    # 0 = unlimited; the bot's open threads count; the rest go to the summary note
   suggestions: true                   # GitLab "apply suggestion" blocks
   resolve_outdated: true              # resolve own threads once the flagged code changed
   fail_on_severity: ""                # e.g. critical: fail the job (exit 3)
   post_failures: true                 # post a note when the review fails
 
-skip:
-  drafts: true
-  labels: [no-review]
-  authors: []
-  title_regex: ['^\[WIP\]']
-  source_branches: []                 # exact names or regexes
-  target_branches: []
+# pruefbyte reviews whenever it is run. When it runs (drafts, labels, authors,
+# branches, ...) is decided by the CI job's rules: see the README.

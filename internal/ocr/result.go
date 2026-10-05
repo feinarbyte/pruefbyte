@@ -14,6 +14,19 @@ type Result struct {
 	Comments []Comment `json:"comments"`
 	Warnings []Warning `json:"warnings,omitempty"`
 	Session  string    `json:"session_id,omitempty"`
+	Manifest *Manifest `json:"manifest,omitempty"`
+}
+
+// Manifest is the part of OCR's run manifest (range reviews) pruefbyte reads.
+type Manifest struct {
+	Coverage struct {
+		Completed []CoveredItem `json:"completed"`
+		Reused    []CoveredItem `json:"reused"`
+	} `json:"coverage"`
+}
+
+type CoveredItem struct {
+	Path string `json:"path"`
 }
 
 type LLMInfo struct {
@@ -72,3 +85,21 @@ func (r *Result) Complete() bool {
 
 // Failed reports whether the run produced nothing usable.
 func (r *Result) Failed() bool { return r.Status == "failed" }
+
+// Reviewed reports whether OCR finished reviewing path in this run, so that a
+// missing finding there means "no issue". A complete run only covers the files
+// OCR selected: files it left out (too large, excluded, unsupported) are not
+// reviewed, and a skipped run reviewed nothing.
+func (r *Result) Reviewed(path string) bool {
+	if r.Manifest == nil {
+		return r.Complete() && r.Status != "skipped"
+	}
+	for _, items := range [][]CoveredItem{r.Manifest.Coverage.Completed, r.Manifest.Coverage.Reused} {
+		for _, it := range items {
+			if it.Path == path {
+				return true
+			}
+		}
+	}
+	return false
+}

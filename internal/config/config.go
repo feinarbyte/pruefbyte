@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -23,7 +22,6 @@ type Config struct {
 	LLM    LLM    `yaml:"llm"`
 	OCR    OCR    `yaml:"ocr"`
 	Review Review `yaml:"review"`
-	Skip   Skip   `yaml:"skip"`
 }
 
 type GitLab struct {
@@ -67,6 +65,9 @@ type OCR struct {
 type Rule struct {
 	Path string `yaml:"path" json:"path"`
 	Rule string `yaml:"rule" json:"rule"`
+	// MergeSystemRule keeps OCR's built-in language rule for matching files and
+	// adds this one. Without it the entry replaces the built-in rule.
+	MergeSystemRule bool `yaml:"merge_system_rule" json:"merge_system_rule,omitempty"`
 }
 
 type Review struct {
@@ -77,15 +78,6 @@ type Review struct {
 	ResolveOutdated bool     `yaml:"resolve_outdated"`
 	FailOnSeverity  string   `yaml:"fail_on_severity"`
 	PostFailures    bool     `yaml:"post_failures"`
-}
-
-type Skip struct {
-	Drafts         bool     `yaml:"drafts"`
-	Labels         []string `yaml:"labels"`
-	Authors        []string `yaml:"authors"`
-	TitleRegex     []string `yaml:"title_regex"`
-	SourceBranches []string `yaml:"source_branches"`
-	TargetBranches []string `yaml:"target_branches"`
 }
 
 // repoConfig lists the only keys a repository file may set. Anything that decides
@@ -107,7 +99,6 @@ type repoConfig struct {
 		UseMRDescriptionAsBackground bool          `yaml:"use_mr_description_as_background"`
 	} `yaml:"ocr"`
 	Review Review `yaml:"review"`
-	Skip   Skip   `yaml:"skip"`
 }
 
 func Default() Config {
@@ -129,11 +120,6 @@ func Default() Config {
 			ResolveOutdated: true,
 			PostFailures:    true,
 		},
-		Skip: Skip{
-			Drafts:     true,
-			Labels:     []string{"no-review"},
-			TitleRegex: []string{`^\[WIP\]`},
-		},
 	}
 }
 
@@ -147,7 +133,7 @@ func (c *Config) ApplyGlobal(data []byte) error {
 func (c *Config) ApplyRepo(data []byte) error {
 	var probe repoConfig
 	if err := decodeStrict(data, &probe); err != nil {
-		return fmt.Errorf("%s: %w (only llm.model, ocr.*, review.* and skip.* are allowed here, except ocr.binary and ocr.extra_args)", RepoConfigFile, err)
+		return fmt.Errorf("%s: %w (only llm.model, ocr.*, and review.* are allowed here, except ocr.binary and ocr.extra_args)", RepoConfigFile, err)
 	}
 	return decodeStrict(data, c)
 }
@@ -204,6 +190,12 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("llm.url is required for custom provider %q", c.LLM.Provider))
 		}
 	}
+	for k, v := range c.LLM.ExtraHeaders {
+		// ocr takes headers as one `k=v,k="v,w"` string and cannot represent these.
+		if k == "" || strings.ContainsAny(k, `,="`) || strings.Contains(v, `"`) {
+			errs = append(errs, fmt.Errorf("llm.extra_headers %q: ocr cannot pass a header whose name contains , = or \" or whose value contains \"", k))
+		}
+	}
 	if c.GitLab.TokenEnv == "" {
 		errs = append(errs, errors.New("gitlab.token_env is required"))
 	}
@@ -230,22 +222,19 @@ func (c Config) Validate() error {
 	if c.Review.MaxComments < 0 {
 		errs = append(errs, errors.New("review.max_comments must be >= 0 (0 = unlimited)"))
 	}
-	for _, re := range c.Skip.TitleRegex {
-		if _, err := regexp.Compile(re); err != nil {
-			errs = append(errs, fmt.Errorf("skip.title_regex %q: %w", re, err))
-		}
-	}
 	return errors.Join(errs...)
 }
 
-// builtinProviders mirrors OCR's built-in provider table (docs: configuration.md).
+// builtinProviders mirrors OCR's built-in provider presets (`ocr llm providers`,
+// v1.12.10). OCR rejects a custom provider that uses one of these names.
 var builtinProviders = map[string]bool{
 	"anthropic": true, "bedrock": true, "openai": true, "openai-responses": true,
 	"openrouter": true, "gemini": true, "dashscope": true, "dashscope-tokenplan": true,
 	"volcengine": true, "deepseek": true, "tencent-tokenhub": true, "hy-tokenplan": true,
-	"iflytek": true, "kimi": true, "kimi-global": true, "z-ai": true, "mimo": true,
-	"minimax": true, "minimax-cn": true, "baidu-qianfan": true, "siliconflow": true,
-	"siliconflow-cn": true, "novita": true, "xai": true,
+	"iflytek": true, "kimi": true, "kimi-global": true, "z-ai": true, "z-ai-coding": true,
+	"mimo": true, "minimax": true, "minimax-cn": true, "baidu-qianfan": true,
+	"siliconflow": true, "siliconflow-cn": true, "novita": true, "xai": true,
+	"edenai": true, "litellm": true, "mistral": true, "ollama-cloud": true,
 }
 
 func IsBuiltinProvider(name string) bool { return builtinProviders[name] }

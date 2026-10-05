@@ -36,7 +36,11 @@ func fakeOCR(args []string) int {
 		// Record settings so the test can check them.
 		f, _ := os.OpenFile(filepath.Join(os.Getenv("HOME"), "settings.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		defer f.Close()
-		fmt.Fprintf(f, "%s=%s\n", args[2], args[3])
+		kv := args[2:]
+		if len(kv) > 0 && kv[0] == "--" {
+			kv = kv[1:]
+		}
+		fmt.Fprintf(f, "%s=%s\n", kv[0], kv[1])
 		return 0
 	case "review":
 		var out string

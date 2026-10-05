@@ -1,14 +1,11 @@
 package review
 
 import (
-	"fmt"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 
 	"pruefbyte/internal/config"
-	"pruefbyte/internal/gitlab"
 	"pruefbyte/internal/ocr"
 )
 
@@ -45,44 +42,4 @@ func filterFindings(cs []ocr.Comment, r config.Review) []ocr.Comment {
 		return out[i].StartLine < out[j].StartLine
 	})
 	return out
-}
-
-// skipReason returns why the MR should not be reviewed, or "".
-func skipReason(s config.Skip, mr *gitlab.MR) string {
-	if s.Drafts && mr.Draft {
-		return "merge request is a draft (skip.drafts)"
-	}
-	for _, l := range mr.Labels {
-		if slices.Contains(s.Labels, l) {
-			return fmt.Sprintf("label %q (skip.labels)", l)
-		}
-	}
-	if slices.Contains(s.Authors, mr.Author) {
-		return fmt.Sprintf("author %q (skip.authors)", mr.Author)
-	}
-	for _, re := range s.TitleRegex {
-		if m, _ := regexp.MatchString(re, mr.Title); m {
-			return fmt.Sprintf("title matches %q (skip.title_regex)", re)
-		}
-	}
-	if matchAny(s.SourceBranches, mr.SourceBranch) {
-		return fmt.Sprintf("source branch %q (skip.source_branches)", mr.SourceBranch)
-	}
-	if matchAny(s.TargetBranches, mr.TargetBranch) {
-		return fmt.Sprintf("target branch %q (skip.target_branches)", mr.TargetBranch)
-	}
-	return ""
-}
-
-// matchAny matches branch names exactly or as regular expressions anchored at both ends.
-func matchAny(patterns []string, s string) bool {
-	for _, p := range patterns {
-		if p == s {
-			return true
-		}
-		if re, err := regexp.Compile("^(?:" + p + ")$"); err == nil && re.MatchString(s) {
-			return true
-		}
-	}
-	return false
 }

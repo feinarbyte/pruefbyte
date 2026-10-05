@@ -6,6 +6,15 @@
 #     - project: <group>/pruefbyte
 #       file: templates/pruefbyte.gitlab-ci.yml
 #
+# The job runs in merge request pipelines, in the `test` stage: if the project
+# defines `stages:`, keep `test` there or override the job's `stage:`. If the
+# project's other jobs run in branch pipelines, switch to merge request pipelines
+# with workflow:rules (see README); otherwise every push runs two pipelines and
+# the merge check only sees the one that holds just this job.
+#
+# pruefbyte reviews whenever the job runs. To skip drafts, labels, authors or
+# branches, override `rules:` on this job (see README, "When it runs").
+#
 # Required CI/CD variables (masked, ideally set at group level):
 #   PRUEFBYTE_GITLAB_TOKEN  personal access token of the bot user (scope: api, role: Developer)
 #   PRUEFBYTE_LLM_API_KEY   API key for the LLM provider
@@ -22,6 +31,14 @@ pruefbyte-review:
   stage: test
   image: $PRUEFBYTE_IMAGE
   rules:
+    # A merge train pipeline re-runs an already reviewed head; failing there would
+    # drop the merge request from the train.
+    - if: $CI_MERGE_REQUEST_EVENT_TYPE == "merge_train"
+      when: never
+    # A fork's pipeline runs in the fork, without this project's CI/CD variables;
+    # pipelines a maintainer runs in this project for the fork still review it.
+    - if: $CI_PROJECT_ID != $CI_MERGE_REQUEST_PROJECT_ID
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   variables:
     GIT_DEPTH: "0" # the MR's base commit must be in the clone

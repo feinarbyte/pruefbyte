@@ -24,11 +24,11 @@ type fakeGitLab struct {
 	diffs       []gitlab.FileDiff
 	compare     map[string][]gitlab.FileDiff
 	discussions []gitlab.Discussion
-	// rejectLine makes CreateDiscussion fail with 400 for this new_line.
-	rejectLine int
-	nextID     int64
-	resolved   []string
-	updates    int
+	// rejectLine makes CreateDiscussion fail with 400 for this new_line, failLine with 500.
+	rejectLine, failLine int
+	nextID               int64
+	resolved             []string
+	updates              int
 }
 
 func (f *fakeGitLab) CurrentUserID(context.Context) (int64, error)         { return botID, nil }
@@ -41,6 +41,9 @@ func (f *fakeGitLab) ListDiscussions(context.Context) ([]gitlab.Discussion, erro
 func (f *fakeGitLab) CreateDiscussion(_ context.Context, body string, pos *gitlab.Position) error {
 	if pos != nil && pos.NewLine == f.rejectLine {
 		return &gl.ErrorResponse{Response: &http.Response{StatusCode: 400}, Message: "400 {line_code: [can't be blank]}"}
+	}
+	if pos != nil && pos.NewLine == f.failLine {
+		return &gl.ErrorResponse{Response: &http.Response{StatusCode: 500}, Message: "500 Internal Server Error"}
 	}
 	f.nextID++
 	p := *pos
@@ -73,14 +76,25 @@ func (f *fakeGitLab) UpdateNote(_ context.Context, id int64, body string) error 
 	return errors.New("note not found")
 }
 
-func (f *fakeGitLab) ReplyAndResolve(_ context.Context, id, _ string) error {
+func (f *fakeGitLab) ReplyAndResolve(_ context.Context, id, body string) error {
 	f.resolved = append(f.resolved, id)
 	for i := range f.discussions {
 		if f.discussions[i].ID == id {
-			f.discussions[i].Notes[0].Resolved = true
+			f.nextID++
+			f.discussions[i].Notes = append(f.discussions[i].Notes, gitlab.Note{ID: f.nextID, AuthorID: botID, Body: body})
+			for j := range f.discussions[i].Notes {
+				f.discussions[i].Notes[j].Resolved = true
+			}
 		}
 	}
 	return nil
+}
+
+// setResolved resolves or unresolves thread i, as a person would.
+func (f *fakeGitLab) setResolved(i int, resolved bool) {
+	for j := range f.discussions[i].Notes {
+		f.discussions[i].Notes[j].Resolved = resolved
+	}
 }
 
 func (f *fakeGitLab) Compare(_ context.Context, from, to string) ([]gitlab.FileDiff, error) {
@@ -107,16 +121,31 @@ func (f *fakeGitLab) summary() string {
 }
 
 type fakeOCR struct {
-	res  *ocr.Result
-	err  error
-	opts ocr.ReviewOptions
+	res   *ocr.Result
+	err   error
+	opts  ocr.ReviewOptions
+	calls int
+	temps map[string][]byte
+	// during runs inside Review, e.g. to simulate a push while OCR works.
+	during func()
 }
 
 func (f *fakeOCR) Review(_ context.Context, o ocr.ReviewOptions) (*ocr.Result, []byte, error) {
 	f.opts = o
+	f.calls++
+	if f.during != nil {
+		f.during()
+	}
 	return f.res, []byte("{}"), f.err
 }
-func (f *fakeOCR) WriteTemp(name string, _ []byte) (string, error) { return "/tmp/" + name, nil }
+
+func (f *fakeOCR) WriteTemp(name string, data []byte) (string, error) {
+	if f.temps == nil {
+		f.temps = map[string][]byte{}
+	}
+	f.temps[name] = data
+	return "/tmp/" + name, nil
+}
 
 // a.go: lines 1-2 context, 3-4 added, 5 context. b.go is new.
 const patchA = "@@ -1,3 +1,5 @@\n ctx1\n ctx2\n+add3\n+add4\n ctx5\n"
@@ -362,42 +391,257 @@ func TestFailurePostsRedactedNote(t *testing.T) {
 	}
 }
 
-func TestSkips(t *testing.T) {
+// When to run is the CI job's decision: pruefbyte reviews whatever it is run on.
+// It only skips a pipeline whose commit is no longer the MR head.
+func TestSkipsOnlyStalePipelines(t *testing.T) {
 	f := newFake()
-	f.mr.Draft = true
-	o := &fakeOCR{res: result()}
-	out, err := Run(context.Background(), deps(f, o, testConfig()), Options{})
-	if err != nil || out.Skipped == "" {
-		t.Fatalf("draft not skipped: %+v %v", out, err)
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "x", StartLine: 3, EndLine: 3})}
+	out, err := Run(context.Background(), deps(f, o, testConfig()), Options{ExpectedHeadSHA: "head1"})
+	if err != nil || out.Skipped != "" || out.Stats.Posted != 1 {
+		t.Fatalf("not reviewed: %+v %v", out, err)
 	}
-	f.mr.Draft = false
+	calls := o.calls
 	out, _ = Run(context.Background(), deps(f, o, testConfig()), Options{ExpectedHeadSHA: "older"})
 	if out.Skipped == "" {
 		t.Error("stale pipeline not skipped")
 	}
-	if o.opts.RepoDir != "" {
-		t.Error("ocr ran for a skipped MR")
+	if o.calls != calls {
+		t.Error("ocr ran for a stale pipeline")
 	}
 }
 
-func TestSkipReason(t *testing.T) {
-	s := config.Skip{Labels: []string{"no-review"}, Authors: []string{"renovate"}, TitleRegex: []string{`^\[WIP\]`},
-		SourceBranches: []string{"release/.*"}, TargetBranches: []string{"legacy"}}
-	cases := []struct {
-		mr   gitlab.MR
-		skip bool
-	}{
-		{gitlab.MR{Title: "ok", Author: "alice", SourceBranch: "feat", TargetBranch: "main"}, false},
-		{gitlab.MR{Labels: []string{"no-review"}}, true},
-		{gitlab.MR{Author: "renovate"}, true},
-		{gitlab.MR{Title: "[WIP] thing"}, true},
-		{gitlab.MR{SourceBranch: "release/1.2"}, true},
-		{gitlab.MR{SourceBranch: "xrelease/1.2"}, false},
-		{gitlab.MR{TargetBranch: "legacy"}, true},
+func TestSameTextOnTwoLinesIsPostedTwice(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(
+		ocr.Comment{Path: "a.go", Content: "Error is ignored.", StartLine: 3, EndLine: 3, ExistingCode: "add3"},
+		ocr.Comment{Path: "a.go", Content: "Error is ignored.", StartLine: 4, EndLine: 4, ExistingCode: "add4"},
+		ocr.Comment{Path: "a.go", Content: "Error is ignored.", StartLine: 4, EndLine: 4, ExistingCode: "add4"}, // repeated
+	)}
+	out, err := Run(context.Background(), deps(f, o, testConfig()), Options{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		if got := skipReason(s, &c.mr) != ""; got != c.skip {
-			t.Errorf("%+v: skip=%v, want %v", c.mr, got, c.skip)
+	if out.Stats.Posted != 2 || len(f.inline()) != 2 {
+		t.Errorf("stats %+v, %d threads", out.Stats, len(f.inline()))
+	}
+}
+
+func TestRewordedFindingIsDuplicate(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "Possible nil dereference.", StartLine: 3, EndLine: 3, ExistingCode: "add3", Category: "bug"})}
+	d := deps(f, o, testConfig())
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	o.res = result(ocr.Comment{Path: "a.go", Content: "x may be nil here.", StartLine: 3, EndLine: 3, ExistingCode: "  add3 ", Category: "Bug"})
+	out, err := Run(context.Background(), d, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stats.Posted != 0 || out.Stats.Duplicates != 1 || len(f.inline()) != 1 {
+		t.Errorf("stats %+v, %d threads", out.Stats, len(f.inline()))
+	}
+}
+
+func TestDifferentIssuesOnSameCodeBothPosted(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(
+		ocr.Comment{Path: "a.go", Content: "Nil dereference.", StartLine: 3, EndLine: 3, ExistingCode: "add3", Category: "bug"},
+		ocr.Comment{Path: "a.go", Content: "Error ignored.", StartLine: 3, EndLine: 3, ExistingCode: "add3", Category: "bug"},
+	)}
+	out, err := Run(context.Background(), deps(f, o, testConfig()), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stats.Posted != 2 {
+		t.Errorf("stats %+v", out.Stats)
+	}
+}
+
+func TestMaxCommentsCountsOpenThreads(t *testing.T) {
+	f := newFake()
+	cfg := testConfig()
+	cfg.Review.MaxComments = 1
+	o := &fakeOCR{res: result(
+		ocr.Comment{Path: "a.go", Content: "one", StartLine: 3, EndLine: 3, Severity: "high"},
+		ocr.Comment{Path: "a.go", Content: "two", StartLine: 4, EndLine: 4, Severity: "high"},
+		ocr.Comment{Path: "a.go", Content: "three", StartLine: 5, EndLine: 5, Severity: "high"},
+	)}
+	d := deps(f, o, cfg)
+	for i := 0; i < 3; i++ { // the pipeline is retried
+		if _, err := Run(context.Background(), d, Options{}); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if n := len(f.inline()); n != 1 {
+		t.Errorf("%d inline threads with max_comments=1", n)
+	}
+	if s := f.summary(); !strings.Contains(s, "two") || !strings.Contains(s, "three") {
+		t.Errorf("overflow missing from summary:\n%s", s)
+	}
+}
+
+func TestReopenedThreadIsNotResolvedAgain(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "still wrong", StartLine: 3, EndLine: 3})}
+	d := deps(f, o, testConfig())
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.mr.HeadSHA = "head2"
+	f.compare["head1..head2"] = []gitlab.FileDiff{{OldPath: "a.go", NewPath: "a.go", Diff: "@@ -3 +3 @@\n-add3\n+fix3\n"}}
+	o.res = result()
+	if _, err := Run(context.Background(), d, Options{}); err != nil || len(f.resolved) != 1 {
+		t.Fatalf("first resolve: %v %v", f.resolved, err)
+	}
+	f.setResolved(0, false) // a reviewer disagrees and reopens it
+	f.mr.HeadSHA = "head3"
+	f.compare["head1..head3"] = f.compare["head1..head2"]
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.resolved) != 1 {
+		t.Errorf("reopened thread resolved again: %v", f.resolved)
+	}
+}
+
+func TestDiffIsReadBeforeTheReview(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "on ctx5", StartLine: 5, EndLine: 5})}
+	// A push lands while OCR runs; outside CI nothing re-checks the head.
+	o.during = func() {
+		f.diffs = []gitlab.FileDiff{{OldPath: "a.go", NewPath: "a.go", Diff: "@@ -1,3 +1,7 @@\n+n1\n+n2\n ctx1\n ctx2\n+add3\n+add4\n ctx5\n"}}
+	}
+	if _, err := Run(context.Background(), deps(f, o, testConfig()), Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if p := f.inline()[0].Notes[0].Position; p.HeadSHA != "head1" || p.NewLine != 5 || p.OldLine != 3 {
+		t.Errorf("position from the wrong diff version: %+v", p)
+	}
+}
+
+func TestReRatedFindingKeepsThreadOpen(t *testing.T) {
+	f := newFake()
+	cfg := testConfig()
+	cfg.Review.MinSeverity = "medium"
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "Error from Close is ignored.", StartLine: 3, EndLine: 3, Severity: "medium"})}
+	d := deps(f, o, cfg)
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// Line 3 is edited without a fix; OCR reports the same finding, now as low.
+	f.mr.HeadSHA = "head2"
+	f.compare["head1..head2"] = []gitlab.FileDiff{{OldPath: "a.go", NewPath: "a.go", Diff: "@@ -3 +3 @@\n-add3\n+add3 // edited\n"}}
+	o.res = result(ocr.Comment{Path: "a.go", Content: "Error from Close is ignored.", StartLine: 3, EndLine: 3, Severity: "low"})
+	out, err := Run(context.Background(), d, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stats.Resolved != 0 {
+		t.Error("thread resolved although OCR still reports the finding")
+	}
+}
+
+func TestResolveOnlyInReviewedFiles(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(ocr.Comment{Path: "a.go", Content: "x", StartLine: 3, EndLine: 3})}
+	d := deps(f, o, testConfig())
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.mr.HeadSHA = "head2"
+	f.compare["head1..head2"] = []gitlab.FileDiff{{OldPath: "a.go", NewPath: "a.go", Diff: "@@ -3 +3 @@\n-add3\n+fix3\n"}}
+	// a.go grew too large and OCR left it out: complete, but a.go was not reviewed.
+	o.res = &ocr.Result{Status: "complete", Manifest: &ocr.Manifest{}}
+	o.res.Manifest.Coverage.Completed = []ocr.CoveredItem{{Path: "b.go"}}
+	out, err := Run(context.Background(), d, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Stats.Resolved != 0 {
+		t.Error("resolved a thread in a file OCR did not review")
+	}
+}
+
+func TestRuleFileComesFromBaseCommit(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result()}
+	cfg := testConfig()
+	cfg.OCR.Exclude = []string{"**/*.{pb,gen}.go"}
+	d := deps(f, o, cfg)
+	var reads []string
+	d.ReadFileAt = func(_ context.Context, rev, path string) ([]byte, bool, error) {
+		reads = append(reads, rev+":"+path)
+		switch path {
+		case ".opencodereview/rule.json":
+			return []byte(`{"exclude": ["docs/**"], "rules": [
+				{"path": "**/*.go", "rule": "base rule"},
+				{"path": "web/**", "rule": "docs/web-rules.md"},
+				{"path": "x/**", "rule": "../outside.md"}]}`), true, nil
+		case "docs/web-rules.md":
+			return []byte("web rule at base\n"), true, nil
+		}
+		return nil, false, nil
+	}
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	rf, err := ocr.ParseRuleFile(o.temps["rule.json"])
+	if err != nil || o.opts.RuleFile == "" {
+		t.Fatalf("no rule file passed: %v %+v", err, o.opts)
+	}
+	if strings.Join(reads, " ") != "base:.opencodereview/rule.json base:docs/web-rules.md" {
+		t.Errorf("reads %v", reads)
+	}
+	if strings.Join(rf.Exclude, ",") != "docs/**,**/*.{pb,gen}.go" || len(rf.Rules) != 4 || rf.Rules[3].Path != "**/*" {
+		t.Fatalf("rule file %+v", rf)
+	}
+	// Rules naming a file get its content from the base commit; a path outside the
+	// repository is dropped, as OCR does.
+	if rf.Rules[0].Rule != "base rule" || rf.Rules[1].Rule != "web rule at base" || rf.Rules[2].Rule != "" {
+		t.Errorf("rules %+v", rf.Rules)
+	}
+}
+
+func TestFetchBeforeConfigBeforeOCRSetup(t *testing.T) {
+	f := newFake()
+	var steps []string
+	d := deps(f, &fakeOCR{res: result()}, testConfig())
+	d.EnsureCommits = func(context.Context, ...string) error { steps = append(steps, "fetch"); return nil }
+	load := d.LoadConfig
+	d.LoadConfig = func(ctx context.Context, sha string) (config.Config, error) {
+		steps = append(steps, "config")
+		return load(ctx, sha)
+	}
+	d.PrepareOCR = func(context.Context, config.Config) error { steps = append(steps, "prepare"); return nil }
+	out, err := Run(context.Background(), d, Options{})
+	if err != nil || out.Skipped != "" {
+		t.Fatalf("run: %+v %v", out, err)
+	}
+	if strings.Join(steps, ",") != "fetch,config,prepare" {
+		t.Errorf("steps %v", steps)
+	}
+	// A stale pipeline is skipped before anything is fetched or loaded.
+	steps = nil
+	if out, _ := Run(context.Background(), d, Options{ExpectedHeadSHA: "older"}); out.Skipped == "" || len(steps) != 0 {
+		t.Errorf("stale run: %+v, steps %v", out, steps)
+	}
+}
+
+func TestFailedPostIsListedInSummary(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: result(ocr.Comment{Path: "untouched.go", Content: "elsewhere", StartLine: 1, EndLine: 1})}
+	d := deps(f, o, testConfig())
+	if _, err := Run(context.Background(), d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.failLine = 3
+	o.res = result(ocr.Comment{Path: "a.go", Content: "cannot be posted", StartLine: 3, EndLine: 3})
+	out, err := Run(context.Background(), d, Options{})
+	if err == nil || out.Stats.Failed != 1 {
+		t.Fatalf("stats %+v, err %v", out.Stats, err)
+	}
+	if s := f.summary(); !strings.Contains(s, "cannot be posted") || strings.Contains(s, "All findings are posted inline") {
+		t.Errorf("summary hides the failed finding:\n%s", s)
 	}
 }
