@@ -22,10 +22,13 @@ from a dedicated bot account.
    | `PRUEFBYTE_LLM_API_KEY` | the LLM API key |
    | `PRUEFBYTE_LLM_PROVIDER` | e.g. `anthropic` |
    | `PRUEFBYTE_LLM_MODEL` | e.g. `claude-sonnet-5` |
-3. **Image.** Build and push it:
+3. **Image.** CI publishes `ghcr.io/feinarbyte/pruefbyte` for linux/amd64 and linux/arm64:
+   `latest` from `main`, `X.Y.Z` and `X.Y` from `vX.Y.Z` tags, and `sha-<commit>` for each of these pushes.
+   If the package is private, give the GitLab runners pull access (a GitHub token with
+   `read:packages` in `DOCKER_AUTH_CONFIG`). To build your own:
    ```sh
-   docker build -t registry.example.com/tools/pruefbyte:latest --build-arg OCR_VERSION=v1.12.10 .
-   docker push registry.example.com/tools/pruefbyte:latest
+   docker buildx build --platform linux/amd64,linux/arm64 --build-arg OCR_VERSION=v1.12.10 \
+     -t registry.example.com/tools/pruefbyte:latest --push .
    ```
 4. **Pipeline.** Include the template in each project (or in a shared CI config):
    ```yaml
@@ -33,7 +36,7 @@ from a dedicated bot account.
      - project: tools/pruefbyte
        file: templates/pruefbyte.gitlab-ci.yml
    variables:
-     PRUEFBYTE_IMAGE: registry.example.com/tools/pruefbyte:latest
+     PRUEFBYTE_IMAGE: ghcr.io/feinarbyte/pruefbyte:latest
    ```
    The job runs in merge request pipelines (not in merge train pipelines, and not in pipelines that run in a fork, which lack the CI/CD variables), in the `test` stage: if the project defines `stages:`, keep `test` or override the job's `stage:`. If the project's other jobs run in branch pipelines, switch to merge request pipelines while a merge request is open, as GitLab recommends. Otherwise every push runs two pipelines, and the merge check only looks at the merge request pipeline, which then holds nothing but this job:
    ```yaml
@@ -126,9 +129,17 @@ pruefbyte review --config pruefbyte.yml --gitlab-url https://gitlab.example.com 
 ## Development
 
 ```sh
-mise install        # Go toolchain
-go test ./...
+mise install            # Go toolchain and golangci-lint
+gofmt -l .              # must print nothing
+golangci-lint run ./...
+go test -race ./...
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs these checks plus `go mod tidy` and
+linux/amd64 + linux/arm64 builds on pushes to `main` and `v*` tags and on every pull
+request. Once they pass, it
+builds the multi-arch image. On `main` and `v*` tags the image is pushed to GHCR;
+for pull requests it is only built.
 
 Layout:
 

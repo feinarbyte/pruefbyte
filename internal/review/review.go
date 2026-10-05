@@ -152,7 +152,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 				logf("warning: posting failure note: %v", perr)
 			}
 		}
-		return nil, fmt.Errorf("%w: %v", ErrReviewFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
 	logf("ocr finished with status %s: %d finding(s)", res.Status, len(res.Comments))
 

@@ -250,10 +250,10 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 	}
 	if f.artifactDir != "" {
 		deps.SaveResult = func(raw []byte) error {
-			if err := os.MkdirAll(f.artifactDir, 0o755); err != nil {
+			if err := os.MkdirAll(f.artifactDir, 0o750); err != nil {
 				return err
 			}
-			return os.WriteFile(filepath.Join(f.artifactDir, "ocr-result.json"), raw, 0o644)
+			return os.WriteFile(filepath.Join(f.artifactDir, "ocr-result.json"), raw, 0o600)
 		}
 	}
 

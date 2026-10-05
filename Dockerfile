@@ -1,15 +1,21 @@
 # syntax=docker/dockerfile:1
 ARG GO_VERSION=1.25
 
-FROM golang:${GO_VERSION}-alpine AS build
+# Build stages run on the build machine's platform and cross-compile, so a
+# multi-arch build only emulates the final stage's package install.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/pruefbyte ./cmd/pruefbyte
+# BuildKit sets these for the target platform; defaults would override them.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/pruefbyte ./cmd/pruefbyte
 
-FROM alpine:3 AS ocr
+FROM --platform=$BUILDPLATFORM alpine:3 AS ocr
 ARG OCR_VERSION=v1.12.10
 # BuildKit sets TARGETARCH for the platform being built; a default here would
 # override it (e.g. an amd64 binary in an arm64 image).

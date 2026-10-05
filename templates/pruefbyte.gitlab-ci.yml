@@ -25,7 +25,7 @@
 #   PRUEFBYTE_IMAGE         image to run (default below)
 
 variables:
-  PRUEFBYTE_IMAGE: registry.example.com/tools/pruefbyte:latest
+  PRUEFBYTE_IMAGE: ghcr.io/feinarbyte/pruefbyte:latest
 
 pruefbyte-review:
   stage: test

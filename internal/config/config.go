@@ -103,8 +103,8 @@ type repoConfig struct {
 
 func Default() Config {
 	return Config{
-		GitLab: GitLab{TokenEnv: "PRUEFBYTE_GITLAB_TOKEN"},
-		LLM:    LLM{APIKeyEnv: "PRUEFBYTE_LLM_API_KEY"},
+		GitLab: GitLab{TokenEnv: "PRUEFBYTE_GITLAB_TOKEN"}, //nolint:gosec // G101: the name of an env var, not a credential
+		LLM:    LLM{APIKeyEnv: "PRUEFBYTE_LLM_API_KEY"},    //nolint:gosec // G101: the name of an env var, not a credential
 		OCR: OCR{
 			Binary:                       "ocr",
 			Effort:                       "medium",

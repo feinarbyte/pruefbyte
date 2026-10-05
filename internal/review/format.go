@@ -1,7 +1,7 @@
 package review
 
 import (
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"regexp"
@@ -27,7 +27,7 @@ func fingerprint(c ocr.Comment) string {
 	if code := codeLines(c.ExistingCode); code != nil {
 		key = "code\x00" + strings.ToLower(strings.TrimSpace(c.Category)) + "\x00" + strings.Join(code, "\n")
 	}
-	h := sha1.Sum([]byte(c.Path + "\x00" + key))
+	h := sha256.Sum256([]byte(c.Path + "\x00" + key))
 	return hex.EncodeToString(h[:8])
 }
 
