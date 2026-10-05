@@ -1,4 +1,43 @@
+# Build output
 /pruefbyte
 /pruefbyte.exe
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test and profiling artifacts
+*.test
+*.out
+coverage.*
+*.coverprofile
+/go.work
+/go.work.sum
+
+# pruefbyte runtime artifacts (OCR results kept by the CI job)
 /.pruefbyte/
+/.ocr/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+/pruefbyte.yml
+mise.local.toml
+.mise.local.toml
+
+# Editor / tool state
+.idea/
+.vscode/
+*.swp
+*~
 .serena/
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
