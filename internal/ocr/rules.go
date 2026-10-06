@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/config"
 )
 
 // RuleFile is OCR's rule.json schema.

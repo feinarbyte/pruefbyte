@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 const (

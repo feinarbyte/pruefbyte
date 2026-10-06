@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/config"
 )
 
 func TestParseResult(t *testing.T) {
@@ -239,5 +239,20 @@ func TestExtraBodyWithNonStringKeys(t *testing.T) {
 	}, "sk", "")))
 	if got := m["providers.openai.extra_body"]; got != `{"logit_bias":{"50256":-100}}` {
 		t.Errorf("extra_body = %q", got)
+	}
+}
+
+func TestUserCredential(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"provider":"anthropic","providers":{"anthropic":{"api_key":"sk-user"},"openai":{"api_key_cmd":"op read x"}},
+		"custom_providers":{"gw":{"api_key":"gw-key"}}}`), 0o600)
+	cases := map[string][2]string{"anthropic": {"sk-user", ""}, "openai": {"", "op read x"}, "gw": {"gw-key", ""}, "deepseek": {"", ""}}
+	for provider, want := range cases {
+		if k, c := userCredential(p, provider); k != want[0] || c != want[1] {
+			t.Errorf("%s: got %q %q, want %q", provider, k, c, want)
+		}
+	}
+	if k, c := userCredential(filepath.Join(t.TempDir(), "missing.json"), "anthropic"); k != "" || c != "" {
+		t.Error("missing config should give nothing")
 	}
 }

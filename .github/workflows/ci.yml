@@ -52,21 +52,40 @@ jobs:
       - run: go test -race -coverprofile=coverage.out ./...
       - run: go tool cover -func=coverage.out | tail -1
 
+  # Builds every release binary (linux, macOS, windows; amd64, arm64) from the
+  # same config the release job uses, so a broken release shows up in the PR.
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go build -trimpath -o pruefbyte-linux-${{ matrix.goarch }} ./cmd/pruefbyte
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: build --snapshot --clean
+
+  # Publishes the binaries for `pruefbyte local` as a GitHub release on v* tags.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the changelog needs the previous tag
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: release --clean
         env:
-          CGO_ENABLED: "0"
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   image:
     needs: [lint, test, build]

@@ -166,3 +166,23 @@ func TestEnvBadValue(t *testing.T) {
 		t.Fatal("non-numeric int accepted")
 	}
 }
+
+func TestRepoFileSetsBuiltinProvider(t *testing.T) {
+	cfg := Default()
+	if err := cfg.ApplyGlobal([]byte("llm:\n  provider: gateway\n  protocol: openai\n  url: https://gw.internal/v1\n  model: x\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ApplyRepo([]byte("llm:\n  provider: anthropic\n  model: claude-sonnet-5\n")); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Provider != "anthropic" || cfg.LLM.Model != "claude-sonnet-5" {
+		t.Errorf("llm = %+v", cfg.LLM)
+	}
+	// The gateway's endpoint must not be used as anthropic's URL.
+	if cfg.LLM.URL != "" || cfg.LLM.Protocol != "" {
+		t.Errorf("endpoint of the global provider kept: %+v", cfg.LLM)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Error(err)
+	}
+}

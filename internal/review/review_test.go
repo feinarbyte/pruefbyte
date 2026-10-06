@@ -11,9 +11,9 @@ import (
 
 	gl "gitlab.com/gitlab-org/api/client-go"
 
-	"pruefbyte/internal/config"
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 const botID = 42

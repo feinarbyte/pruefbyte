@@ -1,4 +1,4 @@
-module pruefbyte
+module github.com/feinarbyte/pruefbyte
 
 go 1.25.14
 

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)

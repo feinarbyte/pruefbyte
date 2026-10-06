@@ -50,6 +50,16 @@ func fakeOCR(args []string) int {
 			}
 		}
 		_ = os.WriteFile(os.Getenv("FAKE_OCR_ARGS"), []byte(strings.Join(args, "\n")), 0o600)
+		if capture := os.Getenv("FAKE_OCR_CAPTURE"); capture != "" {
+			for i, a := range args {
+				if a == "--rule" {
+					rule, _ := os.ReadFile(args[i+1])
+					_ = os.WriteFile(capture+".rule.json", rule, 0o600)
+				}
+			}
+			settings, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), "settings.txt"))
+			_ = os.WriteFile(capture+".settings.txt", settings, 0o600)
+		}
 		_ = os.WriteFile(out, []byte(os.Getenv("FAKE_OCR_RESULT")), 0o600)
 		return 0
 	}

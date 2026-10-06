@@ -9,20 +9,32 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
-	"pruefbyte/internal/ci"
-	"pruefbyte/internal/config"
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/gitutil"
-	"pruefbyte/internal/ocr"
-	"pruefbyte/internal/review"
+	"github.com/feinarbyte/pruefbyte/internal/ci"
+	"github.com/feinarbyte/pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/gitutil"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/review"
 )
 
+// version is set by release builds (-X main.version=...). `go install ...@vX.Y.Z`
+// builds get it from the module version instead.
 var version = "dev"
+
+func init() {
+	if version != "dev" {
+		return
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		version = strings.TrimPrefix(bi.Main.Version, "v")
+	}
+}
 
 // Exit codes.
 const (
@@ -67,7 +79,7 @@ func rootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().StringVarP(&g.configPath, "config", "c", os.Getenv("PRUEFBYTE_CONFIG"), "global config file (env PRUEFBYTE_CONFIG)")
 	root.PersistentFlags().BoolVar(&g.repoConfig, "repo-config", true, "read "+config.RepoConfigFile+" from the merge request's base commit")
-	root.AddCommand(reviewCmd(g), configCmd(g), &cobra.Command{
+	root.AddCommand(reviewCmd(g), localCmd(g), configCmd(g), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Run:   func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "pruefbyte", version) },
@@ -83,6 +95,42 @@ func baseConfig(g *globalFlags) (config.Config, error) {
 		return cfg, err
 	}
 	return cfg, cfg.ApplyEnv(os.LookupEnv)
+}
+
+// configLoader returns the effective config for a review whose base commit is
+// known: defaults < global file < repository file at the base commit < env.
+// CI and local runs both use it, so they review with the same settings.
+func configLoader(g *globalFlags, repo gitutil.Repo, local bool) func(context.Context, string) (config.Config, error) {
+	return func(ctx context.Context, baseSHA string) (config.Config, error) {
+		cfg := config.Default()
+		if err := cfg.LoadGlobalFile(g.configPath); err != nil {
+			return cfg, err
+		}
+		if g.repoConfig {
+			data, found, err := repo.ShowFile(ctx, baseSHA, config.RepoConfigFile)
+			if err != nil {
+				return cfg, err
+			}
+			if found {
+				fmt.Fprintf(os.Stderr, "[pruefbyte] using %s from %.8s\n", config.RepoConfigFile, baseSHA)
+				if err := cfg.ApplyRepo(data); err != nil {
+					return cfg, err
+				}
+			}
+			if local {
+				// CI reads the file at the merge request's base, so edits on the branch
+				// only apply once merged. Say so instead of silently ignoring them.
+				work, err := os.ReadFile(filepath.Join(repo.Dir, config.RepoConfigFile))
+				if (err == nil) != found || string(work) != string(data) {
+					fmt.Fprintf(os.Stderr, "[pruefbyte] note: your %s differs from the target branch's; CI uses the target's until your change is merged, and so does this run\n", config.RepoConfigFile)
+				}
+			}
+		}
+		if err := cfg.ApplyEnv(os.LookupEnv); err != nil {
+			return cfg, err
+		}
+		return cfg, cfg.Validate()
+	}
 }
 
 func configCmd(g *globalFlags) *cobra.Command {
@@ -204,31 +252,10 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 
 	repo := gitutil.Repo{Dir: mrc.RepoDir}
 	deps := review.Deps{
-		GitLab: api,
-		OCR:    runner,
-		Log:    os.Stderr,
-		LoadConfig: func(ctx context.Context, baseSHA string) (config.Config, error) {
-			cfg := config.Default()
-			if err := cfg.LoadGlobalFile(g.configPath); err != nil {
-				return cfg, err
-			}
-			if g.repoConfig {
-				data, found, err := repo.ShowFile(ctx, baseSHA, config.RepoConfigFile)
-				if err != nil {
-					return cfg, err
-				}
-				if found {
-					fmt.Fprintf(os.Stderr, "[pruefbyte] using %s from %.8s\n", config.RepoConfigFile, baseSHA)
-					if err := cfg.ApplyRepo(data); err != nil {
-						return cfg, err
-					}
-				}
-			}
-			if err := cfg.ApplyEnv(os.LookupEnv); err != nil {
-				return cfg, err
-			}
-			return cfg, cfg.Validate()
-		},
+		GitLab:     api,
+		OCR:        runner,
+		Log:        os.Stderr,
+		LoadConfig: configLoader(g, repo, false),
 		PrepareOCR: func(ctx context.Context, cfg config.Config) error {
 			if apiKey == "" && cfg.LLM.Provider != "bedrock" {
 				fmt.Fprintf(os.Stderr, "[pruefbyte] warning: %s is empty; ocr falls back to the provider's own env var\n", cfg.LLM.APIKeyEnv)

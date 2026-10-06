@@ -1,0 +1,40 @@
+# Release binaries for `pruefbyte local` on developer machines. CI runs this on
+# v* tags; try it locally with: goreleaser release --snapshot --clean
+version: 2
+
+project_name: pruefbyte
+
+builds:
+  - main: ./cmd/pruefbyte
+    binary: pruefbyte
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # No version in the name, so .../releases/latest/download/pruefbyte_linux_arm64.tar.gz
+    # always gets the newest release; the README's install commands rely on this.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  footer: |
+    Container image: `ghcr.io/feinarbyte/pruefbyte:{{ .Version }}` (linux/amd64, linux/arm64).

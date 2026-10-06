@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/config"
 )
 
 type Runner struct {
@@ -32,6 +32,8 @@ type Runner struct {
 	// SecretEnv names env vars ocr must not inherit, such as the renamed
 	// gitlab.token_env and llm.api_key_env.
 	SecretEnv []string
+	// APIKeyCmd is used as the provider's api_key_cmd when no API key is given.
+	APIKeyCmd string
 }
 
 // NewRunner creates a runner with a fresh temporary home directory. Call Close to remove it.
@@ -108,10 +110,7 @@ func (r *Runner) command(ctx context.Context, args ...string) (*exec.Cmd, error)
 
 // ConfigSettings returns the `ocr config set` key/value pairs for the LLM settings.
 func ConfigSettings(llm config.LLM, apiKey, language string) ([][2]string, error) {
-	section := "providers." + llm.Provider
-	if !config.IsBuiltinProvider(llm.Provider) {
-		section = "custom_providers." + llm.Provider
-	}
+	section := providerSection(llm.Provider)
 	var kv [][2]string
 	add := func(k, v string) {
 		if v != "" {
@@ -162,6 +161,14 @@ func ConfigSettings(llm config.LLM, apiKey, language string) ([][2]string, error
 	return kv, nil
 }
 
+// providerSection is the config.json section holding a provider's settings.
+func providerSection(provider string) string {
+	if config.IsBuiltinProvider(provider) {
+		return "providers." + provider
+	}
+	return "custom_providers." + provider
+}
+
 // jsonKeys turns the map[any]any that YAML produces for mappings with non-string
 // keys (e.g. logit_bias token ids) into string-keyed maps json can encode.
 func jsonKeys(v any) any {
@@ -194,6 +201,9 @@ func (r *Runner) Configure(ctx context.Context, llm config.LLM, apiKey, language
 	settings, err := ConfigSettings(llm, apiKey, language)
 	if err != nil {
 		return err
+	}
+	if apiKey == "" && r.APIKeyCmd != "" {
+		settings = append(settings, [2]string{providerSection(llm.Provider) + ".api_key_cmd", r.APIKeyCmd})
 	}
 	for _, s := range settings {
 		// "--": a value starting with '-' (an API key can) is not a flag.

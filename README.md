@@ -15,13 +15,16 @@ from a dedicated bot account.
 ## Setup
 
 1. **Bot user.** Create a GitLab user (e.g. `pruefbyte-bot`) and add it to your group or projects as **Developer**. Create a personal access token for it with scope `api`.
-2. **CI/CD variables** (group level, masked):
+2. **CI/CD variables** (group level, masked). Only secrets go here:
    | Variable | Value |
    |---|---|
    | `PRUEFBYTE_GITLAB_TOKEN` | the bot's PAT |
    | `PRUEFBYTE_LLM_API_KEY` | the LLM API key |
-   | `PRUEFBYTE_LLM_PROVIDER` | e.g. `anthropic` |
-   | `PRUEFBYTE_LLM_MODEL` | e.g. `claude-sonnet-5` |
+
+   Provider, model and all review settings go into the repository's `.pruefbyte.yml`
+   (see [Configuration](#configuration)), so that `pruefbyte local` reviews with exactly
+   the same settings. A `PRUEFBYTE_LLM_MODEL` or similar CI variable would override the
+   file in CI only, and local runs would no longer match.
 3. **Image.** CI publishes `ghcr.io/feinarbyte/pruefbyte` for linux/amd64 and linux/arm64:
    `latest` from `main`, `X.Y.Z` and `X.Y` from `vX.Y.Z` tags, and `sha-<commit>` for each of these pushes.
    If the package is private, give the GitLab runners pull access (a GitHub token with
@@ -57,13 +60,16 @@ Settings are layered; later layers win:
 3. `.pruefbyte.yml` in the repository, **read from the merge request's base commit**. A merge request can't change its own review settings: config changes take effect once they are merged. The same holds for OCR's own rule files, `.opencodereview/rule.json` and `ocr.rule_file`: pruefbyte reads them at the base commit and passes one rule file that keeps the merge request's copies from applying.
 4. Environment variables `PRUEFBYTE_<SECTION>_<KEY>`, e.g. `PRUEFBYTE_REVIEW_MIN_SEVERITY=medium`. Lists are comma-separated.
 
-The repository file may only set `llm.model`, `ocr.*` (except `binary` and `extra_args`), and `review.*`. Anything that decides where credentials are sent, or what gets executed, is rejected there.
+The repository file may set `llm.provider` (OCR built-in providers only), `llm.model`, `ocr.*` (except `binary` and `extra_args`) and `review.*`. Anything that decides where credentials are sent, or what gets executed, is rejected there: custom providers with their own `llm.url` belong in the global file.
 
 Secrets are only ever read from the env vars named by `gitlab.token_env` and `llm.api_key_env`. `ocr` runs with a private, temporary `HOME`, so its config file and session logs never touch the runner.
 
 Example `.pruefbyte.yml`:
 
 ```yaml
+llm:
+  provider: anthropic
+  model: claude-sonnet-5
 ocr:
   effort: high
   exclude: ["**/generated/**"]
@@ -116,15 +122,89 @@ Overriding `rules:` replaces the template's list, so keep its first two entries
 | OCR fails | A failure note with the redacted error; job exits 1. |
 | `review.fail_on_severity` reached | Comments are posted; job exits 3. |
 
-## Local use
+## Local review
+
+Run the CI review on your machine before you push, so the bot has nothing left to say:
 
 ```sh
-export PRUEFBYTE_GITLAB_TOKEN=glpat-... PRUEFBYTE_LLM_API_KEY=sk-...
-pruefbyte review --config pruefbyte.yml --gitlab-url https://gitlab.example.com \
-  --project group/project --mr 42 --repo . --dry-run
+pruefbyte local
 ```
 
-`--dry-run` prints the discussions instead of posting them. `pruefbyte config print` shows the effective configuration.
+It reviews what your merge request will contain: everything from the merge base with
+the target branch (default: origin's HEAD; or e.g. `--target origin/develop`) up to your
+working tree, including staged, unstaged and untracked files. Your index, branch and
+files stay untouched. `--committed` reviews only commits, which is exactly what CI sees
+after a push. Findings print in the terminal (`--format json` for tools), and nothing
+is posted.
+
+The settings are the CI's, read the same way and from the same places: `.pruefbyte.yml`
+and OCR rule files at the target branch, with the same rule merging, excludes, effort,
+provider and model, and the same `review.min_severity` / `review.categories` filtering.
+A finding that reaches `review.fail_on_severity` exits 3, as in CI, so the command
+works as a pre-push hook. If you edit `.pruefbyte.yml` on your branch, the run tells
+you that CI, and so the local run, uses the target branch's version until your change
+is merged. One difference remains: CI gives OCR the merge request's title and
+description as background; locally the branch name and commit messages stand in.
+
+The API key is the first one found of:
+1. the env var named by `llm.api_key_env` (`PRUEFBYTE_LLM_API_KEY`),
+2. your own OCR setup (`~/.opencodereview/config.json`: `api_key` or `api_key_cmd`),
+3. the provider's env var, e.g. `ANTHROPIC_API_KEY`.
+
+No GitLab token is needed. If your CI uses a global config file (`PRUEFBYTE_CONFIG`),
+pass the same file with `--config`.
+
+### Install
+
+pruefbyte needs OpenCodeReview's `ocr` on your PATH:
+
+```sh
+npm install -g @alibaba-group/open-code-review   # or: brew install open-code-review
+```
+
+Then install pruefbyte itself, in whichever way suits you.
+
+**Linux / macOS**, latest release into `~/.local/bin`:
+
+```sh
+os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/feinarbyte/pruefbyte/releases/latest/download/pruefbyte_${os}_${arch}.tar.gz" \
+  | tar -xz -C ~/.local/bin pruefbyte
+```
+
+**Windows** (PowerShell), latest release into `%LOCALAPPDATA%\pruefbyte`:
+
+```powershell
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+$dir = "$env:LOCALAPPDATA\pruefbyte"; $zip = "$env:TEMP\pruefbyte.zip"
+Invoke-WebRequest "https://github.com/feinarbyte/pruefbyte/releases/latest/download/pruefbyte_windows_$arch.zip" -OutFile $zip
+Expand-Archive $zip $dir -Force; Remove-Item $zip
+[Environment]::SetEnvironmentVariable('Path', "$([Environment]::GetEnvironmentVariable('Path', 'User'));$dir", 'User')
+```
+
+Each release also lists the archives with a `checksums.txt`
+([releases](https://github.com/feinarbyte/pruefbyte/releases)).
+
+**With Go** 1.25 or newer:
+
+```sh
+go install github.com/feinarbyte/pruefbyte/cmd/pruefbyte@latest
+```
+
+**With Docker**, with `ocr` included and nothing to install. Run it as yourself so
+new git objects in your repository stay yours:
+
+```sh
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo \
+  -e PRUEFBYTE_LLM_API_KEY ghcr.io/feinarbyte/pruefbyte pruefbyte local
+```
+
+Check the install with `pruefbyte version`.
+
+To try the CI path against a real merge request without posting, set
+`PRUEFBYTE_GITLAB_TOKEN` and run `pruefbyte review --project group/project --mr 42 --dry-run`.
+`pruefbyte config print` shows the effective configuration.
 
 ## Development
 
@@ -135,11 +215,15 @@ golangci-lint run ./...
 go test -race ./...
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs these checks plus `go mod tidy` and
-linux/amd64 + linux/arm64 builds on pushes to `main` and `v*` tags and on every pull
-request. Once they pass, it
-builds the multi-arch image. On `main` and `v*` tags the image is pushed to GHCR;
-for pull requests it is only built.
+GitHub Actions (`.github/workflows/ci.yml`) runs these checks plus `go mod tidy` on
+pushes to `main` and `v*` tags and on every pull request. It also builds all release
+binaries (Linux, macOS and Windows; amd64 and arm64) with GoReleaser
+(`.goreleaser.yaml`). Once these pass, it builds the multi-arch image. On `main` and
+`v*` tags the image is pushed to GHCR; for pull requests it is only built.
+
+To release, push a tag such as `v0.1.0`. CI then publishes the image tags `0.1.0`
+and `0.1`, plus a GitHub release with the binaries and checksums. Try the release
+build locally with `goreleaser release --snapshot --clean`.
 
 Layout:
 

@@ -7,6 +7,8 @@ gitlab:
   token_env: PRUEFBYTE_GITLAB_TOKEN   # env var holding the bot's PAT
 
 llm:
+  # provider and model are better set in the repository's .pruefbyte.yml, where
+  # `pruefbyte local` finds them too; only custom providers (url, protocol) need this file.
   provider: anthropic                 # any OCR built-in provider; other names are custom providers
   model: claude-sonnet-5
   api_key_env: PRUEFBYTE_LLM_API_KEY  # env var holding the API key

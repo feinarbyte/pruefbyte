@@ -54,3 +54,72 @@ func TestShowFileAndEnsureCommits(t *testing.T) {
 		t.Error("EnsureCommits with an unknown commit and no remote should fail")
 	}
 }
+
+func TestSnapshotAndMergeBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o644)
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-qm", "base")
+	base := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "switch", "-qc", "feature")
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("two\n"), 0o644)
+	git(t, dir, "commit", "-qam", "change a")
+	head := git(t, dir, "rev-parse", "HEAD")
+
+	r := Repo{Dir: dir}
+	ctx := context.Background()
+	if mb, err := r.MergeBase(ctx, "main", "HEAD"); err != nil || mb != base {
+		t.Fatalf("MergeBase = %s, %v; want %s", mb, err, base)
+	}
+	if target, err := r.DefaultTarget(ctx); err != nil || target != "main" {
+		t.Errorf("DefaultTarget = %q, %v", target, err)
+	}
+	if _, err := r.MergeBase(ctx, "nope", "HEAD"); err == nil {
+		t.Error("unknown target accepted")
+	}
+	if snap, err := r.Snapshot(ctx); err != nil || snap != head {
+		t.Errorf("clean tree: Snapshot = %s, %v; want HEAD", snap, err)
+	}
+
+	// Unstaged, staged and untracked changes are all in the snapshot; ignored files are not.
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("three\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("s\n"), 0o644)
+	git(t, dir, "add", "staged.txt")
+	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("i\n"), 0o644)
+	statusBefore := git(t, dir, "status", "--porcelain")
+	snap, err := r.Snapshot(ctx)
+	if err != nil || snap == head {
+		t.Fatalf("Snapshot = %s, %v", snap, err)
+	}
+	if got := git(t, dir, "show", snap+":a.txt"); got != "three" {
+		t.Errorf("a.txt in snapshot = %q", got)
+	}
+	files := git(t, dir, "ls-tree", "--name-only", snap)
+	for _, want := range []string{"staged.txt", "new.txt"} {
+		if !strings.Contains(files, want) {
+			t.Errorf("%s missing from snapshot: %s", want, files)
+		}
+	}
+	if strings.Contains(files, "ignored.txt") {
+		t.Error("ignored file in snapshot")
+	}
+	if parent := git(t, dir, "rev-parse", snap+"^"); parent != head {
+		t.Errorf("snapshot parent = %s, want HEAD", parent)
+	}
+	// Nothing about the user's repository changed.
+	if now := git(t, dir, "rev-parse", "HEAD"); now != head {
+		t.Error("HEAD moved")
+	}
+	if after := git(t, dir, "status", "--porcelain"); after != statusBefore {
+		t.Errorf("status changed:\nbefore %q\nafter  %q", statusBefore, after)
+	}
+	if log, err := r.Log(ctx, base, head); err != nil || log != "change a" {
+		t.Errorf("Log = %q, %v", log, err)
+	}
+}

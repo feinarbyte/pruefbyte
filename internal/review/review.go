@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"pruefbyte/internal/config"
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 // Reviewer runs the review engine. *ocr.Runner implements it.
@@ -234,21 +234,27 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		}
 	}
 
-	if cfg.Review.FailOnSeverity != "" {
-		gate := config.SeverityRank(cfg.Review.FailOnSeverity)
-		for _, c := range findings {
-			if config.SeverityRank(c.Severity) >= gate {
-				out.GateFailed = true
-				out.GateReason = fmt.Sprintf("%s finding in %s (%s): review.fail_on_severity is %s",
-					strings.ToLower(c.Severity), c.Path, lineLabel(c), cfg.Review.FailOnSeverity)
-				break
-			}
-		}
-	}
+	out.GateReason = gateReason(findings, cfg.Review)
+	out.GateFailed = out.GateReason != ""
 	if st.Failed > 0 {
 		return out, fmt.Errorf("%d comment(s) could not be posted", st.Failed)
 	}
 	return out, nil
+}
+
+// gateReason explains why review.fail_on_severity trips for these findings, or "".
+func gateReason(findings []ocr.Comment, r config.Review) string {
+	if r.FailOnSeverity == "" {
+		return ""
+	}
+	gate := config.SeverityRank(r.FailOnSeverity)
+	for _, c := range findings {
+		if config.SeverityRank(c.Severity) >= gate {
+			return fmt.Sprintf("%s finding in %s (%s): review.fail_on_severity is %s",
+				strings.ToLower(c.Severity), c.Path, lineLabel(c), r.FailOnSeverity)
+		}
+	}
+	return ""
 }
 
 func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDir string, d Deps) (ocr.ReviewOptions, error) {
