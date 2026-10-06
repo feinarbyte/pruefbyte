@@ -88,6 +88,10 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
+          # The default comes from the repository's license (MIT) and would replace the
+          # Dockerfile's label, but the image also bundles Apache-2.0 licensed ocr.
+          labels: |
+            org.opencontainers.image.licenses=MIT AND Apache-2.0
           # latest follows main only; the default (auto) would also move it on every v* tag.
           flavor: latest=false
           # Lowest priority, so the version passed to the build is sha-<commit> on main, not "latest".

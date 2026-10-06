@@ -26,12 +26,17 @@ RUN apk add --no-cache curl \
  && curl -fsSLO "https://github.com/alibaba/open-code-review/releases/download/${OCR_VERSION}/opencodereview-linux-${arch}" \
  && curl -fsSLO "https://github.com/alibaba/open-code-review/releases/download/${OCR_VERSION}/sha256sum.txt" \
  && grep " opencodereview-linux-${arch}\$" sha256sum.txt | sha256sum -c - \
- && install -m 0755 "opencodereview-linux-${arch}" /out-ocr
+ && install -m 0755 "opencodereview-linux-${arch}" /out-ocr \
+ && curl -fsSL -o /out-ocr-LICENSE "https://raw.githubusercontent.com/alibaba/open-code-review/${OCR_VERSION}/LICENSE"
 
 FROM alpine:3
 # OCR needs git >= 2.41; alpine:3 ships a current git.
 RUN apk add --no-cache git ca-certificates
 COPY --from=ocr /out-ocr /usr/local/bin/ocr
 COPY --from=build /out/pruefbyte /usr/local/bin/pruefbyte
+# pruefbyte is MIT licensed; the bundled ocr binary is Apache-2.0.
+COPY LICENSE /usr/share/licenses/pruefbyte/LICENSE
+COPY --from=ocr /out-ocr-LICENSE /usr/share/licenses/open-code-review/LICENSE
+LABEL org.opencontainers.image.licenses="MIT AND Apache-2.0"
 ENTRYPOINT []
 CMD ["pruefbyte", "review"]

@@ -153,3 +153,11 @@ Layout:
 | `internal/gitutil` | reads the repo config at the base commit; fetches missing commits |
 
 OCR is used as a subprocess. Its Go packages all live under `internal/`, so they can't be imported from another module; its JSON output is the stable interface.
+
+## License
+
+pruefbyte is released under the [MIT License](LICENSE).
+
+The Docker image also bundles the OpenCodeReview (`ocr`) binary, which is
+licensed under the [Apache License 2.0](https://github.com/alibaba/open-code-review/blob/main/LICENSE).
+Both license texts are in the image under `/usr/share/licenses/`.
