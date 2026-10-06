@@ -23,7 +23,7 @@ llm:
   aws_profile: ""
 
 ocr:
-  binary: ocr
+  binary: ""                          # empty: the ocr built into release binaries, else ocr on the PATH
   effort: medium                      # low | medium | high (review rounds)
   language: English                   # language of the comments
   timeout: 30m                        # whole OCR run

@@ -109,7 +109,7 @@ func Default() Config {
 		GitLab: GitLab{TokenEnv: "PRUEFBYTE_GITLAB_TOKEN"}, //nolint:gosec // G101: the name of an env var, not a credential
 		LLM:    LLM{APIKeyEnv: "PRUEFBYTE_LLM_API_KEY"},    //nolint:gosec // G101: the name of an env var, not a credential
 		OCR: OCR{
-			Binary:                       "ocr",
+			Binary:                       "", // automatic: see newRunner in cmd/pruefbyte
 			Effort:                       "medium",
 			Timeout:                      30 * time.Minute,
 			Concurrency:                  8,

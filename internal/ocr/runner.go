@@ -346,7 +346,7 @@ var ErrNotFound = errors.New("ocr binary not found")
 // Version returns `ocr version` output, or ErrNotFound.
 func (r *Runner) Version(ctx context.Context) (string, error) {
 	if _, err := exec.LookPath(r.Binary); err != nil {
-		return "", fmt.Errorf("%w: %q (install @alibaba-group/open-code-review or set ocr.binary)", ErrNotFound, r.Binary)
+		return "", fmt.Errorf("%w: %q (use a pruefbyte release binary, which includes ocr, or install @alibaba-group/open-code-review, or set ocr.binary)", ErrNotFound, r.Binary)
 	}
 	cmd, err := r.command(ctx, "version")
 	if err != nil {

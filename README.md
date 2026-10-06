@@ -30,7 +30,7 @@ from a dedicated bot account.
    If the package is private, give the GitLab runners pull access (a GitHub token with
    `read:packages` in `DOCKER_AUTH_CONFIG`). To build your own:
    ```sh
-   docker buildx build --platform linux/amd64,linux/arm64 --build-arg OCR_VERSION=v1.12.10 \
+   docker buildx build --platform linux/amd64,linux/arm64 \
      -t registry.example.com/tools/pruefbyte:latest --push .
    ```
 4. **Pipeline.** Include the template in each project (or in a shared CI config):
@@ -156,13 +156,15 @@ pass the same file with `--config`.
 
 ### Install
 
-pruefbyte needs OpenCodeReview's `ocr` on your PATH:
+Release binaries include OpenCodeReview (`ocr`), the exact version CI uses, so a
+single download is all you need. On first use pruefbyte unpacks it into your user cache
+directory. Pick whichever install suits you:
+
+**With mise:**
 
 ```sh
-npm install -g @alibaba-group/open-code-review   # or: brew install open-code-review
+mise use -g github:feinarbyte/pruefbyte
 ```
-
-Then install pruefbyte itself, in whichever way suits you.
 
 **Linux / macOS**, latest release into `~/.local/bin`:
 
@@ -173,11 +175,11 @@ curl -fsSL "https://github.com/feinarbyte/pruefbyte/releases/latest/download/pru
   | tar -xz -C ~/.local/bin pruefbyte
 ```
 
-**Windows** (PowerShell), latest release into `%LOCALAPPDATA%\pruefbyte`:
+**Windows** (PowerShell), latest release into `%LOCALAPPDATA%\Programs\pruefbyte`:
 
 ```powershell
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
-$dir = "$env:LOCALAPPDATA\pruefbyte"; $zip = "$env:TEMP\pruefbyte.zip"
+$dir = "$env:LOCALAPPDATA\Programs\pruefbyte"; $zip = "$env:TEMP\pruefbyte.zip"
 Invoke-WebRequest "https://github.com/feinarbyte/pruefbyte/releases/latest/download/pruefbyte_windows_$arch.zip" -OutFile $zip
 Expand-Archive $zip $dir -Force; Remove-Item $zip
 [Environment]::SetEnvironmentVariable('Path', "$([Environment]::GetEnvironmentVariable('Path', 'User'));$dir", 'User')
@@ -186,10 +188,12 @@ Expand-Archive $zip $dir -Force; Remove-Item $zip
 Each release also lists the archives with a `checksums.txt`
 ([releases](https://github.com/feinarbyte/pruefbyte/releases)).
 
-**With Go** 1.25 or newer:
+**With Go** 1.25 or newer. This builds from source without OCR, so `ocr` must be on
+your PATH as well:
 
 ```sh
 go install github.com/feinarbyte/pruefbyte/cmd/pruefbyte@latest
+npm install -g @alibaba-group/open-code-review   # or: brew install open-code-review
 ```
 
 **With Docker**, with `ocr` included and nothing to install. Run it as yourself so
@@ -200,7 +204,8 @@ docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo \
   -e PRUEFBYTE_LLM_API_KEY ghcr.io/feinarbyte/pruefbyte pruefbyte local
 ```
 
-Check the install with `pruefbyte version`.
+Check the install with `pruefbyte version`; it also says whether `ocr` is built in.
+An `ocr.binary` setting overrides the built-in copy.
 
 To try the CI path against a real merge request without posting, set
 `PRUEFBYTE_GITLAB_TOKEN` and run `pruefbyte review --project group/project --mr 42 --dry-run`.
@@ -225,6 +230,12 @@ To release, push a tag such as `v0.1.0`. CI then publishes the image tags `0.1.0
 and `0.1`, plus a GitHub release with the binaries and checksums. Try the release
 build locally with `goreleaser release --snapshot --clean`.
 
+The OCR version is pinned in `internal/ocrbin/VERSION`, for both the Docker image and
+the release binaries. To update OCR, change that file. Release builds use the
+`embedocr` build tag and embed the gzip-compressed `ocr` that
+`go run ./internal/ocrbin/fetch` downloads and checks against OCR's published
+checksums. Plain `go build` and `go test` need neither.
+
 Layout:
 
 | Path | Purpose |
@@ -232,6 +243,7 @@ Layout:
 | `cmd/pruefbyte` | CLI (cobra) and wiring |
 | `internal/config` | layered config, repo-file allow-list, env overrides |
 | `internal/ocr` | drives the `ocr` CLI and parses its JSON |
+| `internal/ocrbin` | the pinned OCR version; the `ocr` embedded in release builds (`fetch` downloads it) |
 | `internal/gitlab` | client-go wrapper bound to one MR; dry-run decorator |
 | `internal/review` | orchestration: filter, place, dedupe, publish, resolve |
 | `internal/gitutil` | reads the repo config at the base commit; fetches missing commits |
@@ -242,6 +254,7 @@ OCR is used as a subprocess. Its Go packages all live under `internal/`, so they
 
 pruefbyte is released under the [MIT License](LICENSE).
 
-The Docker image also bundles the OpenCodeReview (`ocr`) binary, which is
-licensed under the [Apache License 2.0](https://github.com/alibaba/open-code-review/blob/main/LICENSE).
-Both license texts are in the image under `/usr/share/licenses/`.
+The Docker image and the release binaries also bundle the OpenCodeReview (`ocr`)
+binary, which is licensed under the [Apache License 2.0](https://github.com/alibaba/open-code-review/blob/main/LICENSE).
+Both license texts are in the image under `/usr/share/licenses/`, and in each release
+archive as `LICENSE` and `LICENSE.open-code-review`.

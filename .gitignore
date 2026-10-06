@@ -21,6 +21,9 @@ coverage.*
 /.pruefbyte/
 /.ocr/
 
+# OCR binaries downloaded for release builds (go run ./internal/ocrbin/fetch)
+/internal/ocrbin/bin/
+
 # Local configuration and secrets
 .env
 .env.*

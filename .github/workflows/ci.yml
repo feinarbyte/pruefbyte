@@ -52,8 +52,9 @@ jobs:
       - run: go test -race -coverprofile=coverage.out ./...
       - run: go tool cover -func=coverage.out | tail -1
 
-  # Builds every release binary (linux, macOS, windows; amd64, arm64) from the
-  # same config the release job uses, so a broken release shows up in the PR.
+  # Builds every release binary (linux, macOS, windows; amd64, arm64), with ocr
+  # embedded, from the same config the release job uses, so a broken release
+  # shows up in the PR.
   build:
     runs-on: ubuntu-latest
     steps:
@@ -61,6 +62,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Cache OCR binaries embedded in release builds
+        uses: actions/cache@v6
+        with:
+          path: internal/ocrbin/bin
+          key: ocrbin-${{ hashFiles('internal/ocrbin/VERSION', 'internal/ocrbin/fetch/**') }}
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: v2.18.2
@@ -80,6 +86,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Cache OCR binaries embedded in release builds
+        uses: actions/cache@v6
+        with:
+          path: internal/ocrbin/bin
+          key: ocrbin-${{ hashFiles('internal/ocrbin/VERSION', 'internal/ocrbin/fetch/**') }}
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: v2.18.2

@@ -109,7 +109,7 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 	log, _ := repo.Log(ctx, mergeBase, head)
 
 	apiKey := os.Getenv(base.LLM.APIKeyEnv)
-	runner, err := ocr.NewRunner(base.OCR.Binary, os.Stderr)
+	runner, err := newRunner(base.OCR.Binary)
 	if err != nil {
 		return err
 	}

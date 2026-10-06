@@ -20,6 +20,7 @@ import (
 	"github.com/feinarbyte/pruefbyte/internal/gitlab"
 	"github.com/feinarbyte/pruefbyte/internal/gitutil"
 	"github.com/feinarbyte/pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/ocrbin"
 	"github.com/feinarbyte/pruefbyte/internal/review"
 )
 
@@ -82,7 +83,14 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(reviewCmd(g), localCmd(g), configCmd(g), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
-		Run:   func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "pruefbyte", version) },
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), "pruefbyte", version)
+			if ocrbin.Available() {
+				fmt.Fprintln(cmd.OutOrStdout(), "ocr", ocrbin.Version(), "(built in)")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "ocr: not built in; uses ocr.binary or ocr from the PATH (tested with", ocrbin.Version()+")")
+			}
+		},
 	})
 	return root
 }
@@ -95,6 +103,24 @@ func baseConfig(g *globalFlags) (config.Config, error) {
 		return cfg, err
 	}
 	return cfg, cfg.ApplyEnv(os.LookupEnv)
+}
+
+// newRunner prepares ocr: ocr.binary if configured, else the copy built into
+// release binaries, else ocr from the PATH. The built-in copy comes first so a
+// local run uses exactly the OCR version CI does.
+func newRunner(configured string) (*ocr.Runner, error) {
+	binary := configured
+	if binary == "" && ocrbin.Available() {
+		p, err := ocrbin.Path()
+		if err != nil {
+			return nil, fmt.Errorf("preparing the built-in ocr: %w (set ocr.binary to use another one)", err)
+		}
+		binary = p
+	}
+	if binary == "" {
+		binary = "ocr"
+	}
+	return ocr.NewRunner(binary, os.Stderr)
 }
 
 // configLoader returns the effective config for a review whose base commit is
@@ -240,7 +266,7 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 		api = gitlab.DryRun{API: client, Out: os.Stdout}
 	}
 
-	runner, err := ocr.NewRunner(base.OCR.Binary, os.Stderr)
+	runner, err := newRunner(base.OCR.Binary)
 	if err != nil {
 		return err
 	}

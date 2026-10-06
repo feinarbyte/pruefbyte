@@ -16,11 +16,15 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/pruefbyte ./cmd/pruefbyte
 
 FROM --platform=$BUILDPLATFORM alpine:3 AS ocr
-ARG OCR_VERSION=v1.12.10
+# The OCR version is pinned in internal/ocrbin/VERSION, which the release
+# binaries embed too, so the image and `pruefbyte local` run the same ocr.
+# tr also drops the CR a Windows checkout (core.autocrlf) adds.
+COPY internal/ocrbin/VERSION /tmp/OCR_VERSION
 # BuildKit sets TARGETARCH for the platform being built; a default here would
 # override it (e.g. an amd64 binary in an arm64 image).
 ARG TARGETARCH
 RUN apk add --no-cache curl \
+ && OCR_VERSION="$(tr -d '[:space:]' < /tmp/OCR_VERSION)" \
  && arch="${TARGETARCH:-amd64}" \
  && cd /tmp \
  && curl -fsSLO "https://github.com/alibaba/open-code-review/releases/download/${OCR_VERSION}/opencodereview-linux-${arch}" \
