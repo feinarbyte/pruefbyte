@@ -74,7 +74,7 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 	repo := gitutil.Repo{Dir: dir}
 	top, err := repo.Toplevel(ctx)
 	if err != nil {
-		return fmt.Errorf("%s is not inside a git repository", dir)
+		return fmt.Errorf("%s is not inside a git repository: %w", dir, err)
 	}
 	repo.Dir = top
 
@@ -136,8 +136,15 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 			if key == "" {
 				var cmd string
 				key, cmd = ocr.UserCredential(cfg.LLM.Provider)
-				runner.APIKeyCmd = cmd
-				if key != "" || cmd != "" {
+				if key == "" && cmd != "" {
+					// ocr would run the command under pruefbyte's private HOME, where
+					// keychains, pass or ~/ files are not found; run it here instead.
+					var err error
+					if key, err = ocr.RunKeyCommand(ctx, cmd); err != nil {
+						return fmt.Errorf("api_key_cmd for %s from your OCR config: %w", cfg.LLM.Provider, err)
+					}
+				}
+				if key != "" {
 					fmt.Fprintf(os.Stderr, "[pruefbyte] using the %s API key from your OCR config\n", cfg.LLM.Provider)
 				}
 			}
@@ -153,6 +160,9 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 	}
 
 	if f.format == "json" {
+		if out.Findings == nil {
+			out.Findings = []ocr.Comment{} // "findings": [], not null
+		}
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(localJSON{

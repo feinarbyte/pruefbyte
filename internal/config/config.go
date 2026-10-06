@@ -142,9 +142,12 @@ func (c *Config) ApplyRepo(data []byte) error {
 		if !IsBuiltinProvider(p) {
 			return fmt.Errorf("%s: llm.provider %q is not an OCR built-in provider; custom providers (llm.url, llm.protocol) can only be set in the global config", RepoConfigFile, p)
 		}
-		if p != c.LLM.Provider {
-			// An endpoint configured for the global provider does not belong to this one.
-			c.LLM.URL, c.LLM.Protocol = "", ""
+		// The operator's API key (and extra headers or body) are meant for the
+		// operator's provider. A global config that names one keeps it, so a merged
+		// .pruefbyte.yml cannot send that key to another vendor; repositories choose
+		// the provider only when the global config leaves it open.
+		if c.LLM.Provider != "" && p != c.LLM.Provider {
+			return fmt.Errorf("%s: llm.provider %q: the global config sets llm.provider %q, which a repository cannot change; leave llm.provider out of the global config to let repositories choose", RepoConfigFile, p, c.LLM.Provider)
 		}
 	}
 	return decodeStrict(data, c)

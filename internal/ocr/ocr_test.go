@@ -256,3 +256,15 @@ func TestUserCredential(t *testing.T) {
 		t.Error("missing config should give nothing")
 	}
 }
+
+func TestRunKeyCommand(t *testing.T) {
+	ctx := context.Background()
+	if key, err := RunKeyCommand(ctx, "echo sk-from-cmd"); err != nil || key != "sk-from-cmd" {
+		t.Errorf("got %q, %v", key, err)
+	}
+	for _, bad := range []string{"exit 3", "echo a && echo b"} {
+		if key, err := RunKeyCommand(ctx, bad); err == nil {
+			t.Errorf("%q: accepted %q", bad, key)
+		}
+	}
+}

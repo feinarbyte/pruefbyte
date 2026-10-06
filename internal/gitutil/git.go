@@ -120,9 +120,9 @@ func (r Repo) Head(ctx context.Context) (string, error) {
 
 // Snapshot returns a commit holding the working tree as it is now: tracked
 // changes, staged or not, plus untracked files that are not ignored. It uses a
-// throwaway index, so the real index, HEAD and branches stay untouched; the
-// commit is unreferenced and git eventually prunes it. Without changes it
-// returns HEAD itself.
+// throwaway copy of the index, so the real index, HEAD and branches stay
+// untouched; the commit is unreferenced and git eventually prunes it. Without
+// changes it returns HEAD itself.
 func (r Repo) Snapshot(ctx context.Context) (string, error) {
 	head, err := r.Head(ctx)
 	if err != nil {
@@ -133,9 +133,15 @@ func (r Repo) Snapshot(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	env := []string{"GIT_INDEX_FILE=" + filepath.Join(tmp, "index")}
-	if _, err := r.runEnv(ctx, env, "read-tree", head); err != nil {
-		return "", err
+	index := filepath.Join(tmp, "index")
+	env := []string{"GIT_INDEX_FILE=" + index}
+	// Starting from a copy of the real index keeps its stat data, so `git add`
+	// only rehashes files that changed, and its skip-worktree bits, so files
+	// outside a sparse checkout are not recorded as deleted.
+	if err := r.copyIndex(ctx, index); err != nil {
+		if _, err := r.runEnv(ctx, env, "read-tree", head); err != nil {
+			return "", err
+		}
 	}
 	if _, err := r.runEnv(ctx, env, "add", "--all", "--", "."); err != nil {
 		return "", err
@@ -156,6 +162,31 @@ func (r Repo) Snapshot(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// copyIndex copies the repository's index file to dst.
+func (r Repo) copyIndex(ctx context.Context, dst string) error {
+	out, err := r.run(ctx, "rev-parse", "--git-path", "index")
+	if err != nil {
+		return err
+	}
+	src := filepath.FromSlash(strings.TrimSpace(string(out)))
+	if !filepath.IsAbs(src) {
+		src = filepath.Join(r.Dir, src)
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is in pruefbyte's own temp dir
+		return err
+	}
+	// git's racy-clean check compares entries with the index file's mtime.
+	return os.Chtimes(dst, st.ModTime(), st.ModTime())
 }
 
 // Log returns the subjects and bodies of the commits in base..head, oldest first.

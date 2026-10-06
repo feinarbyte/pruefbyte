@@ -120,8 +120,10 @@ func configLoader(g *globalFlags, repo gitutil.Repo, local bool) func(context.Co
 			if local {
 				// CI reads the file at the merge request's base, so edits on the branch
 				// only apply once merged. Say so instead of silently ignoring them.
+				// Compare without CRs: with core.autocrlf the checkout has CRLF, the blob LF.
 				work, err := os.ReadFile(filepath.Join(repo.Dir, config.RepoConfigFile))
-				if (err == nil) != found || string(work) != string(data) {
+				lf := func(b []byte) string { return strings.ReplaceAll(string(b), "\r\n", "\n") }
+				if (err == nil) != found || lf(work) != lf(data) {
 					fmt.Fprintf(os.Stderr, "[pruefbyte] note: your %s differs from the target branch's; CI uses the target's until your change is merged, and so does this run\n", config.RepoConfigFile)
 				}
 			}

@@ -63,15 +63,27 @@ func badge(c ocr.Comment) string {
 }
 
 func lineLabel(c ocr.Comment) string {
-	switch {
-	case c.StartLine > 0 && c.EndLine > c.StartLine:
-		return fmt.Sprintf("lines %d–%d", c.StartLine, c.EndLine)
-	case c.EndLine > 0:
-		return fmt.Sprintf("line %d", c.EndLine)
-	case c.StartLine > 0:
-		return fmt.Sprintf("line %d", c.StartLine)
+	switch start, end := lineSpan(c); {
+	case end > start:
+		return fmt.Sprintf("lines %d–%d", start, end)
+	case start > 0:
+		return fmt.Sprintf("line %d", start)
 	}
 	return ""
+}
+
+// lineSpan returns the lines a finding covers: start == end for a single line,
+// both 0 when it names none.
+func lineSpan(c ocr.Comment) (start, end int) {
+	switch {
+	case c.StartLine > 0 && c.EndLine > c.StartLine:
+		return c.StartLine, c.EndLine
+	case c.EndLine > 0:
+		return c.EndLine, c.EndLine
+	case c.StartLine > 0:
+		return c.StartLine, c.StartLine
+	}
+	return 0, 0
 }
 
 // fence returns a backtick fence longer than any backtick run inside code.

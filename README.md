@@ -60,7 +60,7 @@ Settings are layered; later layers win:
 3. `.pruefbyte.yml` in the repository, **read from the merge request's base commit**. A merge request can't change its own review settings: config changes take effect once they are merged. The same holds for OCR's own rule files, `.opencodereview/rule.json` and `ocr.rule_file`: pruefbyte reads them at the base commit and passes one rule file that keeps the merge request's copies from applying.
 4. Environment variables `PRUEFBYTE_<SECTION>_<KEY>`, e.g. `PRUEFBYTE_REVIEW_MIN_SEVERITY=medium`. Lists are comma-separated.
 
-The repository file may set `llm.provider` (OCR built-in providers only), `llm.model`, `ocr.*` (except `binary` and `extra_args`) and `review.*`. Anything that decides where credentials are sent, or what gets executed, is rejected there: custom providers with their own `llm.url` belong in the global file.
+The repository file may set `llm.provider` (OCR built-in providers only, and only when the global config does not set one: a provider the operator names keeps the shared API key with that vendor), `llm.model`, `ocr.*` (except `binary` and `extra_args`) and `review.*`. Anything that decides where credentials are sent, or what gets executed, is rejected there: custom providers with their own `llm.url` belong in the global file.
 
 Secrets are only ever read from the env vars named by `gitlab.token_env` and `llm.api_key_env`. `ocr` runs with a private, temporary `HOME`, so its config file and session logs never touch the runner.
 

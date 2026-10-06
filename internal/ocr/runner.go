@@ -32,8 +32,6 @@ type Runner struct {
 	// SecretEnv names env vars ocr must not inherit, such as the renamed
 	// gitlab.token_env and llm.api_key_env.
 	SecretEnv []string
-	// APIKeyCmd is used as the provider's api_key_cmd when no API key is given.
-	APIKeyCmd string
 }
 
 // NewRunner creates a runner with a fresh temporary home directory. Call Close to remove it.
@@ -201,9 +199,6 @@ func (r *Runner) Configure(ctx context.Context, llm config.LLM, apiKey, language
 	settings, err := ConfigSettings(llm, apiKey, language)
 	if err != nil {
 		return err
-	}
-	if apiKey == "" && r.APIKeyCmd != "" {
-		settings = append(settings, [2]string{providerSection(llm.Provider) + ".api_key_cmd", r.APIKeyCmd})
 	}
 	for _, s := range settings {
 		// "--": a value starting with '-' (an API key can) is not a flag.

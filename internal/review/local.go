@@ -45,15 +45,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 	if err != nil {
 		return nil, err
 	}
-	reviewCtx, cancel := context.WithTimeout(ctx, cfg.OCR.Timeout)
-	res, raw, err := d.OCR.Review(reviewCtx, ro)
-	cancel()
-	if raw != nil && d.SaveResult != nil {
-		_ = d.SaveResult(raw)
-	}
-	if err == nil && res.Failed() {
-		err = fmt.Errorf("ocr reported status %q: %s", res.Status, res.Message)
-	}
+	res, err := runOCR(ctx, d, ro, cfg.OCR.Timeout)
 	if err != nil {
 		// ocr's output has already streamed to d.Log; repeating it would only add noise.
 		var re *ocr.RunError
@@ -70,13 +62,11 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 func WriteLocal(w io.Writer, o *LocalOutcome) {
 	for _, c := range o.Findings {
 		head := c.Path
-		switch {
-		case c.StartLine > 0 && c.EndLine > c.StartLine:
-			head += fmt.Sprintf(":%d-%d", c.StartLine, c.EndLine)
-		case c.EndLine > 0:
-			head += fmt.Sprintf(":%d", c.EndLine)
-		case c.StartLine > 0:
-			head += fmt.Sprintf(":%d", c.StartLine)
+		switch start, end := lineSpan(c); {
+		case end > start:
+			head += fmt.Sprintf(":%d-%d", start, end)
+		case start > 0:
+			head += fmt.Sprintf(":%d", start)
 		}
 		if b := strings.Trim(badge(c), "*"); b != "" {
 			head += "  " + b

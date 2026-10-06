@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/feinarbyte/pruefbyte/internal/config"
 	"github.com/feinarbyte/pruefbyte/internal/gitlab"
@@ -127,17 +128,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	reviewCtx, cancel := context.WithTimeout(ctx, cfg.OCR.Timeout)
-	res, raw, err := d.OCR.Review(reviewCtx, ro)
-	cancel()
-	if raw != nil && d.SaveResult != nil {
-		if serr := d.SaveResult(raw); serr != nil {
-			logf("warning: saving OCR result: %v", serr)
-		}
-	}
-	if err == nil && res.Failed() {
-		err = fmt.Errorf("ocr reported status %q: %s", res.Status, res.Message)
-	}
+	res, err := runOCR(ctx, d, ro, cfg.OCR.Timeout)
 	if err != nil {
 		if cfg.Review.PostFailures {
 			msg := err.Error()
@@ -240,6 +231,23 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		return out, fmt.Errorf("%d comment(s) could not be posted", st.Failed)
 	}
 	return out, nil
+}
+
+// runOCR runs the review within timeout, keeps OCR's raw result if asked to,
+// and turns a result OCR reports as failed into an error.
+func runOCR(ctx context.Context, d Deps, ro ocr.ReviewOptions, timeout time.Duration) (*ocr.Result, error) {
+	reviewCtx, cancel := context.WithTimeout(ctx, timeout)
+	res, raw, err := d.OCR.Review(reviewCtx, ro)
+	cancel()
+	if raw != nil && d.SaveResult != nil {
+		if serr := d.SaveResult(raw); serr != nil {
+			fmt.Fprintf(d.Log, "[pruefbyte] warning: saving OCR result: %v\n", serr)
+		}
+	}
+	if err == nil && res.Failed() {
+		err = fmt.Errorf("ocr reported status %q: %s", res.Status, res.Message)
+	}
+	return res, err
 }
 
 // gateReason explains why review.fail_on_severity trips for these findings, or "".
