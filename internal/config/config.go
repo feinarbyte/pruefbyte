@@ -240,8 +240,9 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// builtinProviders mirrors OCR's built-in provider presets (`ocr llm providers`,
-// v1.12.10). OCR rejects a custom provider that uses one of these names.
+// builtinProviders mirrors OCR's built-in provider presets (`ocr llm providers`)
+// for the version pinned in internal/ocrbin/VERSION; check it on every OCR bump.
+// OCR rejects a custom provider that uses one of these names.
 var builtinProviders = map[string]bool{
 	"anthropic": true, "bedrock": true, "openai": true, "openai-responses": true,
 	"openrouter": true, "gemini": true, "dashscope": true, "dashscope-tokenplan": true,

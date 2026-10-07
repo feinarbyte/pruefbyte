@@ -12,7 +12,7 @@ llm:
   # A provider set here is fixed: repositories cannot switch the shared API key to
   # another vendor. Leave it out to let each repository choose.
   provider: anthropic                 # any OCR built-in provider; other names are custom providers
-  model: claude-sonnet-5
+  model: claude-sonnet-5              # any model ID the provider serves; OCR's built-in lists are only suggestions
   api_key_env: PRUEFBYTE_LLM_API_KEY  # env var holding the API key
   url: ""                             # base URL override; required for custom providers
   protocol: ""                        # custom providers: anthropic | openai | openai-responses | anthropic-bedrock
