@@ -162,9 +162,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 
 	for _, c := range findings {
 		fp := fingerprint(c)
-		// Two findings share a fingerprint when they quote the same code; only an
-		// identical report at the same place is the same finding twice in one run.
-		key := fmt.Sprintf("%s:%d-%d:%s", fp, c.StartLine, c.EndLine, strings.ToLower(strings.Join(strings.Fields(c.Content), " ")))
+		key := repeatKey(c, fp)
 		if seen[key] {
 			continue
 		}
@@ -231,6 +229,13 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		return out, fmt.Errorf("%d comment(s) could not be posted", st.Failed)
 	}
 	return out, nil
+}
+
+// repeatKey identifies a finding reported twice in one run. Two findings share a
+// fingerprint (fp) when they quote the same code; only an identical report at
+// the same place is the same finding twice.
+func repeatKey(c ocr.Comment, fp string) string {
+	return fmt.Sprintf("%s:%d-%d:%s", fp, c.StartLine, c.EndLine, strings.ToLower(strings.Join(strings.Fields(c.Content), " ")))
 }
 
 // runOCR runs the review within timeout, keeps OCR's raw result if asked to,

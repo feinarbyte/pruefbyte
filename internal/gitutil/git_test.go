@@ -82,7 +82,7 @@ func TestSnapshotAndMergeBase(t *testing.T) {
 	if _, err := r.MergeBase(ctx, "nope", "HEAD"); err == nil {
 		t.Error("unknown target accepted")
 	}
-	if snap, err := r.Snapshot(ctx); err != nil || snap != head {
+	if snap, err := r.Snapshot(ctx, head); err != nil || snap != head {
 		t.Errorf("clean tree: Snapshot = %s, %v; want HEAD", snap, err)
 	}
 
@@ -93,7 +93,7 @@ func TestSnapshotAndMergeBase(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("i\n"), 0o644)
 	statusBefore := git(t, dir, "status", "--porcelain")
-	snap, err := r.Snapshot(ctx)
+	snap, err := r.Snapshot(ctx, head)
 	if err != nil || snap == head {
 		t.Fatalf("Snapshot = %s, %v", snap, err)
 	}

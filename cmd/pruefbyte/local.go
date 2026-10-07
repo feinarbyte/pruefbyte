@@ -94,7 +94,7 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 	}
 	to := head
 	if !f.committed {
-		if to, err = repo.Snapshot(ctx); err != nil {
+		if to, err = repo.Snapshot(ctx, head); err != nil {
 			return fmt.Errorf("snapshotting the working tree: %w", err)
 		}
 	}
@@ -134,9 +134,21 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 		PrepareOCR: func(ctx context.Context, cfg config.Config) error {
 			key := apiKey
 			if key == "" {
-				var cmd string
-				key, cmd = ocr.UserCredential(cfg.LLM.Provider)
-				if key == "" && cmd != "" {
+				uc := ocr.UserCredential(cfg.LLM.Provider)
+				// A key the user's setup sends to its own endpoint (a gateway, a proxy)
+				// must not go to the endpoint this review uses instead.
+				if (uc.APIKey != "" || uc.APIKeyCmd != "") && uc.URL != "" &&
+					strings.TrimRight(uc.URL, "/") != strings.TrimRight(cfg.LLM.URL, "/") {
+					endpoint := cfg.LLM.URL
+					if endpoint == "" {
+						endpoint = "the provider's default endpoint"
+					}
+					fmt.Fprintf(os.Stderr, "[pruefbyte] not using the %s API key from your OCR config: it is for %s, but this review uses %s\n",
+						cfg.LLM.Provider, uc.URL, endpoint)
+					uc = ocr.UserCred{}
+				}
+				key = uc.APIKey
+				if cmd := uc.APIKeyCmd; key == "" && cmd != "" {
 					// ocr would run the command under pruefbyte's private HOME, where
 					// keychains, pass or ~/ files are not found; run it here instead.
 					var err error

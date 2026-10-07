@@ -121,13 +121,10 @@ func (r Repo) Head(ctx context.Context) (string, error) {
 // Snapshot returns a commit holding the working tree as it is now: tracked
 // changes, staged or not, plus untracked files that are not ignored. It uses a
 // throwaway copy of the index, so the real index, HEAD and branches stay
-// untouched; the commit is unreferenced and git eventually prunes it. Without
-// changes it returns HEAD itself.
-func (r Repo) Snapshot(ctx context.Context) (string, error) {
-	head, err := r.Head(ctx)
-	if err != nil {
-		return "", err
-	}
+// untouched; the commit is unreferenced and git eventually prunes it. head is
+// the commit HEAD points to (see Head), the snapshot's parent; without changes
+// Snapshot returns head itself.
+func (r Repo) Snapshot(ctx context.Context, head string) (string, error) {
 	tmp, err := os.MkdirTemp("", "pruefbyte-index-")
 	if err != nil {
 		return "", err

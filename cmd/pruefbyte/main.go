@@ -132,6 +132,7 @@ func configLoader(g *globalFlags, repo gitutil.Repo, local bool) func(context.Co
 		if err := cfg.LoadGlobalFile(g.configPath); err != nil {
 			return cfg, err
 		}
+		repoProvider := "" // llm.provider as the repository file chose it
 		if g.repoConfig {
 			data, found, err := repo.ShowFile(ctx, baseSHA, config.RepoConfigFile)
 			if err != nil {
@@ -139,8 +140,12 @@ func configLoader(g *globalFlags, repo gitutil.Repo, local bool) func(context.Co
 			}
 			if found {
 				fmt.Fprintf(os.Stderr, "[pruefbyte] using %s from %.8s\n", config.RepoConfigFile, baseSHA)
+				before := cfg.LLM.Provider
 				if err := cfg.ApplyRepo(data); err != nil {
 					return cfg, err
+				}
+				if cfg.LLM.Provider != before {
+					repoProvider = cfg.LLM.Provider
 				}
 			}
 			if local {
@@ -156,6 +161,12 @@ func configLoader(g *globalFlags, repo gitutil.Repo, local bool) func(context.Co
 		}
 		if err := cfg.ApplyEnv(os.LookupEnv); err != nil {
 			return cfg, err
+		}
+		// Like a provider in the global config, one set by env var is fixed. Say so
+		// rather than run the repository's llm.model against another provider.
+		if repoProvider != "" && cfg.LLM.Provider != repoProvider {
+			return cfg, fmt.Errorf("%s: llm.provider %q: %sLLM_PROVIDER sets llm.provider %q, which a repository cannot change; unset it to let repositories choose",
+				config.RepoConfigFile, repoProvider, config.EnvPrefix, cfg.LLM.Provider)
 		}
 		return cfg, cfg.Validate()
 	}

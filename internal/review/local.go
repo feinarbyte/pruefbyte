@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 
 	"github.com/feinarbyte/pruefbyte/internal/gitlab"
 	"github.com/feinarbyte/pruefbyte/internal/ocr"
@@ -54,25 +55,33 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 		}
 		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
-	findings := filterFindings(res.Comments, cfg.Review)
+	// CI posts a finding OCR reports twice in one run only once.
+	var findings []ocr.Comment
+	seen := map[string]bool{}
+	for _, c := range filterFindings(res.Comments, cfg.Review) {
+		if key := repeatKey(c, fingerprint(c)); !seen[key] {
+			seen[key] = true
+			findings = append(findings, c)
+		}
+	}
 	return &LocalOutcome{Result: res, Findings: findings, GateReason: gateReason(findings, cfg.Review)}, nil
 }
 
 // WriteLocal prints a local review's findings for a terminal.
 func WriteLocal(w io.Writer, o *LocalOutcome) {
 	for _, c := range o.Findings {
-		head := c.Path
+		head := plain(c.Path)
 		switch start, end := lineSpan(c); {
 		case end > start:
 			head += fmt.Sprintf(":%d-%d", start, end)
 		case start > 0:
 			head += fmt.Sprintf(":%d", start)
 		}
-		if b := strings.Trim(badge(c), "*"); b != "" {
+		if b := strings.Trim(plain(badge(c)), "*"); b != "" {
 			head += "  " + b
 		}
-		fmt.Fprintf(w, "%s\n%s\n", head, indent(strings.TrimSpace(c.Content), "  "))
-		if code := strings.TrimRight(c.SuggestionCode, "\n"); code != "" {
+		fmt.Fprintf(w, "%s\n%s\n", head, indent(strings.TrimSpace(plain(c.Content)), "  "))
+		if code := strings.TrimRight(plain(c.SuggestionCode), "\n"); code != "" {
 			fmt.Fprintf(w, "\n  Suggested change:\n%s\n", indent(code, "    "))
 		}
 		fmt.Fprintln(w)
@@ -83,16 +92,31 @@ func WriteLocal(w io.Writer, o *LocalOutcome) {
 	} else {
 		fmt.Fprintf(w, "%d finding(s)", len(o.Findings))
 		if hidden > 0 {
-			fmt.Fprintf(w, ", %d more below review.min_severity or outside review.categories", hidden)
+			fmt.Fprintf(w, ", %d more below review.min_severity, outside review.categories, empty or repeated", hidden)
 		}
 		fmt.Fprintln(w, ".")
 	}
+	// CI lists these in its summary note.
+	for _, wn := range o.Result.Warnings {
+		fmt.Fprintf(w, "OCR warning: %s\n", plain(strings.TrimSpace(wn.File+" "+strings.Join(strings.Fields(wn.Message), " "))))
+	}
 	if !o.Result.Complete() {
-		fmt.Fprintf(w, "Warning: OCR's review was incomplete (status %s); CI may report more.\n", o.Result.Status)
+		fmt.Fprintf(w, "Warning: OCR's review was incomplete (status %s); CI may report more.\n", plain(o.Result.Status))
 	}
 	if o.GateReason != "" {
 		fmt.Fprintf(w, "CI would fail this merge request: %s\n", o.GateReason)
 	}
+}
+
+// plain drops control characters other than tab and newline from model output,
+// so a finding cannot move the cursor, recolor or retitle the terminal.
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, s)
 }
 
 func indent(s, prefix string) string {

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/feinarbyte/pruefbyte/internal/gitutil"
 )
 
 // TestLocalReviewsLikeCI runs the same branch through `review` (CI) and `local`
@@ -157,5 +159,29 @@ review:
 	}
 	if gitCmd(t, repo, "rev-parse", "HEAD") != head || gitCmd(t, repo, "status", "--porcelain") != status {
 		t.Error("local review changed the repository")
+	}
+}
+
+// A provider pinned by env var, like one in the global config, cannot be
+// switched by the repository; its llm.model would not fit the other provider.
+func TestRepoProviderVersusEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	gitCmd(t, repo, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(repo, ".pruefbyte.yml"), []byte("llm:\n  provider: anthropic\n  model: claude-sonnet-5\n"), 0o644)
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-qm", "base")
+	base := gitCmd(t, repo, "rev-parse", "HEAD")
+	load := configLoader(&globalFlags{repoConfig: true}, gitutil.Repo{Dir: repo}, false)
+
+	t.Setenv("PRUEFBYTE_LLM_PROVIDER", "anthropic")
+	if _, err := load(context.Background(), base); err != nil {
+		t.Errorf("same provider rejected: %v", err)
+	}
+	t.Setenv("PRUEFBYTE_LLM_PROVIDER", "openai")
+	if _, err := load(context.Background(), base); err == nil || !strings.Contains(err.Error(), "PRUEFBYTE_LLM_PROVIDER") {
+		t.Errorf("env provider silently replaced the repository's: %v", err)
 	}
 }
