@@ -12,10 +12,11 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"pruefbyte/internal/config"
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 // Reviewer runs the review engine. *ocr.Runner implements it.
@@ -127,17 +128,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	reviewCtx, cancel := context.WithTimeout(ctx, cfg.OCR.Timeout)
-	res, raw, err := d.OCR.Review(reviewCtx, ro)
-	cancel()
-	if raw != nil && d.SaveResult != nil {
-		if serr := d.SaveResult(raw); serr != nil {
-			logf("warning: saving OCR result: %v", serr)
-		}
-	}
-	if err == nil && res.Failed() {
-		err = fmt.Errorf("ocr reported status %q: %s", res.Status, res.Message)
-	}
+	res, err := runOCR(ctx, d, ro, cfg.OCR.Timeout)
 	if err != nil {
 		if cfg.Review.PostFailures {
 			msg := err.Error()
@@ -171,9 +162,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 
 	for _, c := range findings {
 		fp := fingerprint(c)
-		// Two findings share a fingerprint when they quote the same code; only an
-		// identical report at the same place is the same finding twice in one run.
-		key := fmt.Sprintf("%s:%d-%d:%s", fp, c.StartLine, c.EndLine, strings.ToLower(strings.Join(strings.Fields(c.Content), " ")))
+		key := repeatKey(c, fp)
 		if seen[key] {
 			continue
 		}
@@ -234,21 +223,51 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		}
 	}
 
-	if cfg.Review.FailOnSeverity != "" {
-		gate := config.SeverityRank(cfg.Review.FailOnSeverity)
-		for _, c := range findings {
-			if config.SeverityRank(c.Severity) >= gate {
-				out.GateFailed = true
-				out.GateReason = fmt.Sprintf("%s finding in %s (%s): review.fail_on_severity is %s",
-					strings.ToLower(c.Severity), c.Path, lineLabel(c), cfg.Review.FailOnSeverity)
-				break
-			}
-		}
-	}
+	out.GateReason = gateReason(findings, cfg.Review)
+	out.GateFailed = out.GateReason != ""
 	if st.Failed > 0 {
 		return out, fmt.Errorf("%d comment(s) could not be posted", st.Failed)
 	}
 	return out, nil
+}
+
+// repeatKey identifies a finding reported twice in one run. Two findings share a
+// fingerprint (fp) when they quote the same code; only an identical report at
+// the same place is the same finding twice.
+func repeatKey(c ocr.Comment, fp string) string {
+	return fmt.Sprintf("%s:%d-%d:%s", fp, c.StartLine, c.EndLine, strings.ToLower(strings.Join(strings.Fields(c.Content), " ")))
+}
+
+// runOCR runs the review within timeout, keeps OCR's raw result if asked to,
+// and turns a result OCR reports as failed into an error.
+func runOCR(ctx context.Context, d Deps, ro ocr.ReviewOptions, timeout time.Duration) (*ocr.Result, error) {
+	reviewCtx, cancel := context.WithTimeout(ctx, timeout)
+	res, raw, err := d.OCR.Review(reviewCtx, ro)
+	cancel()
+	if raw != nil && d.SaveResult != nil {
+		if serr := d.SaveResult(raw); serr != nil {
+			fmt.Fprintf(d.Log, "[pruefbyte] warning: saving OCR result: %v\n", serr)
+		}
+	}
+	if err == nil && res.Failed() {
+		err = fmt.Errorf("ocr reported status %q: %s", res.Status, res.Message)
+	}
+	return res, err
+}
+
+// gateReason explains why review.fail_on_severity trips for these findings, or "".
+func gateReason(findings []ocr.Comment, r config.Review) string {
+	if r.FailOnSeverity == "" {
+		return ""
+	}
+	gate := config.SeverityRank(r.FailOnSeverity)
+	for _, c := range findings {
+		if config.SeverityRank(c.Severity) >= gate {
+			return fmt.Sprintf("%s finding in %s (%s): review.fail_on_severity is %s",
+				strings.ToLower(c.Severity), c.Path, lineLabel(c), r.FailOnSeverity)
+		}
+	}
+	return ""
 }
 
 func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDir string, d Deps) (ocr.ReviewOptions, error) {

@@ -166,3 +166,41 @@ func TestEnvBadValue(t *testing.T) {
 		t.Fatal("non-numeric int accepted")
 	}
 }
+
+func TestRepoFileProvider(t *testing.T) {
+	repo := []byte("llm:\n  provider: anthropic\n  model: claude-sonnet-5\n")
+
+	// The global config leaves the provider open: the repository chooses.
+	cfg := Default()
+	if err := cfg.ApplyRepo(repo); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Provider != "anthropic" || cfg.LLM.Model != "claude-sonnet-5" {
+		t.Errorf("llm = %+v", cfg.LLM)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Error(err)
+	}
+
+	// Naming the provider the global config already uses is fine.
+	cfg = Default()
+	cfg.LLM.Provider = "anthropic"
+	if err := cfg.ApplyRepo(repo); err != nil {
+		t.Errorf("same provider rejected: %v", err)
+	}
+
+	// A global config that names a provider keeps it: the operator's key must not
+	// go to another vendor, whether built-in or a custom gateway.
+	for _, global := range []string{
+		"llm:\n  provider: openrouter\n",
+		"llm:\n  provider: gateway\n  protocol: openai\n  url: https://gw.internal/v1\n",
+	} {
+		cfg = Default()
+		if err := cfg.ApplyGlobal([]byte(global)); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.ApplyRepo(repo); err == nil || !strings.Contains(err.Error(), "cannot change") {
+			t.Errorf("repository switched the provider from %q: %v", cfg.LLM.Provider, err)
+		}
+	}
+}

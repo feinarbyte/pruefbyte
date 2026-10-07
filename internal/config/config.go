@@ -85,7 +85,10 @@ type Review struct {
 // ocr.binary, ocr.extra_args) stays under the operator's control.
 type repoConfig struct {
 	LLM struct {
-		Model string `yaml:"model"`
+		// Provider must be an OCR built-in: their endpoints are fixed by OCR, so the
+		// repository can pick a vendor but cannot point the API key at its own URL.
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
 	} `yaml:"llm"`
 	OCR struct {
 		Effort                       string        `yaml:"effort"`
@@ -106,7 +109,7 @@ func Default() Config {
 		GitLab: GitLab{TokenEnv: "PRUEFBYTE_GITLAB_TOKEN"}, //nolint:gosec // G101: the name of an env var, not a credential
 		LLM:    LLM{APIKeyEnv: "PRUEFBYTE_LLM_API_KEY"},    //nolint:gosec // G101: the name of an env var, not a credential
 		OCR: OCR{
-			Binary:                       "ocr",
+			Binary:                       "", // automatic: see newRunner in cmd/pruefbyte
 			Effort:                       "medium",
 			Timeout:                      30 * time.Minute,
 			Concurrency:                  8,
@@ -133,7 +136,19 @@ func (c *Config) ApplyGlobal(data []byte) error {
 func (c *Config) ApplyRepo(data []byte) error {
 	var probe repoConfig
 	if err := decodeStrict(data, &probe); err != nil {
-		return fmt.Errorf("%s: %w (only llm.model, ocr.*, and review.* are allowed here, except ocr.binary and ocr.extra_args)", RepoConfigFile, err)
+		return fmt.Errorf("%s: %w (only llm.provider, llm.model, ocr.* and review.* are allowed here, except ocr.binary and ocr.extra_args)", RepoConfigFile, err)
+	}
+	if p := probe.LLM.Provider; p != "" {
+		if !IsBuiltinProvider(p) {
+			return fmt.Errorf("%s: llm.provider %q is not an OCR built-in provider; custom providers (llm.url, llm.protocol) can only be set in the global config", RepoConfigFile, p)
+		}
+		// The operator's API key (and extra headers or body) are meant for the
+		// operator's provider. A global config that names one keeps it, so a merged
+		// .pruefbyte.yml cannot send that key to another vendor; repositories choose
+		// the provider only when the global config leaves it open.
+		if c.LLM.Provider != "" && p != c.LLM.Provider {
+			return fmt.Errorf("%s: llm.provider %q: the global config sets llm.provider %q, which a repository cannot change; leave llm.provider out of the global config to let repositories choose", RepoConfigFile, p, c.LLM.Provider)
+		}
 	}
 	return decodeStrict(data, c)
 }
@@ -177,10 +192,10 @@ var protocols = map[string]bool{"anthropic": true, "openai": true, "openai-respo
 func (c Config) Validate() error {
 	var errs []error
 	if c.LLM.Provider == "" {
-		errs = append(errs, errors.New("llm.provider is required"))
+		errs = append(errs, errors.New("llm.provider is required: set it in .pruefbyte.yml or the global config"))
 	}
 	if c.LLM.Model == "" {
-		errs = append(errs, errors.New("llm.model is required"))
+		errs = append(errs, errors.New("llm.model is required: set it in .pruefbyte.yml or the global config"))
 	}
 	if !IsBuiltinProvider(c.LLM.Provider) && c.LLM.Provider != "" {
 		if !protocols[c.LLM.Protocol] {

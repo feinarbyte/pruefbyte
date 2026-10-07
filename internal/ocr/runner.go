@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/config"
 )
 
 type Runner struct {
@@ -108,10 +108,7 @@ func (r *Runner) command(ctx context.Context, args ...string) (*exec.Cmd, error)
 
 // ConfigSettings returns the `ocr config set` key/value pairs for the LLM settings.
 func ConfigSettings(llm config.LLM, apiKey, language string) ([][2]string, error) {
-	section := "providers." + llm.Provider
-	if !config.IsBuiltinProvider(llm.Provider) {
-		section = "custom_providers." + llm.Provider
-	}
+	section := providerSection(llm.Provider)
 	var kv [][2]string
 	add := func(k, v string) {
 		if v != "" {
@@ -160,6 +157,14 @@ func ConfigSettings(llm config.LLM, apiKey, language string) ([][2]string, error
 	}
 	add("language", language)
 	return kv, nil
+}
+
+// providerSection is the config.json section holding a provider's settings.
+func providerSection(provider string) string {
+	if config.IsBuiltinProvider(provider) {
+		return "providers." + provider
+	}
+	return "custom_providers." + provider
 }
 
 // jsonKeys turns the map[any]any that YAML produces for mappings with non-string
@@ -341,7 +346,7 @@ var ErrNotFound = errors.New("ocr binary not found")
 // Version returns `ocr version` output, or ErrNotFound.
 func (r *Runner) Version(ctx context.Context) (string, error) {
 	if _, err := exec.LookPath(r.Binary); err != nil {
-		return "", fmt.Errorf("%w: %q (install @alibaba-group/open-code-review or set ocr.binary)", ErrNotFound, r.Binary)
+		return "", fmt.Errorf("%w: %q (use a pruefbyte release binary, which includes ocr, or install @alibaba-group/open-code-review, or set ocr.binary)", ErrNotFound, r.Binary)
 	}
 	cmd, err := r.command(ctx, "version")
 	if err != nil {

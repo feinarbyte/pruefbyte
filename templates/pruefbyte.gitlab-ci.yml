@@ -15,11 +15,11 @@
 # pruefbyte reviews whenever the job runs. To skip drafts, labels, authors or
 # branches, override `rules:` on this job (see README, "When it runs").
 #
-# Required CI/CD variables (masked, ideally set at group level):
+# Required CI/CD variables (masked, ideally set at group level), secrets only:
 #   PRUEFBYTE_GITLAB_TOKEN  personal access token of the bot user (scope: api, role: Developer)
 #   PRUEFBYTE_LLM_API_KEY   API key for the LLM provider
-#   PRUEFBYTE_LLM_PROVIDER  e.g. anthropic, openai, dashscope (or set llm.provider in PRUEFBYTE_CONFIG)
-#   PRUEFBYTE_LLM_MODEL     e.g. claude-sonnet-5
+# Provider, model and review settings belong in the repository's .pruefbyte.yml,
+# so `pruefbyte local` on a developer machine reviews exactly like this job.
 # Optional:
 #   PRUEFBYTE_CONFIG        path to a global config file (a "File" type CI variable works well)
 #   PRUEFBYTE_IMAGE         image to run (default below)

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"pruefbyte/internal/gitlab"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/gitlab"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 func TestParsePatch(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/config"
 )
 
 func TestParseResult(t *testing.T) {
@@ -239,5 +239,39 @@ func TestExtraBodyWithNonStringKeys(t *testing.T) {
 	}, "sk", "")))
 	if got := m["providers.openai.extra_body"]; got != `{"logit_bias":{"50256":-100}}` {
 		t.Errorf("extra_body = %q", got)
+	}
+}
+
+func TestUserCredential(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"provider":"anthropic","providers":{"anthropic":{"api_key":"sk-user"},"openai":{"api_key_cmd":"op read x"}},
+		"custom_providers":{"gw":{"api_key":"gw-key","url":"https://gw.internal/v1"}}}`), 0o600)
+	cases := map[string]UserCred{
+		"anthropic": {APIKey: "sk-user"}, "openai": {APIKeyCmd: "op read x"},
+		"gw": {APIKey: "gw-key", URL: "https://gw.internal/v1"}, "deepseek": {},
+	}
+	for provider, want := range cases {
+		if got := userCredential(p, provider); got != want {
+			t.Errorf("%s: got %+v, want %+v", provider, got, want)
+		}
+	}
+	if got := userCredential(filepath.Join(t.TempDir(), "missing.json"), "anthropic"); got != (UserCred{}) {
+		t.Error("missing config should give nothing")
+	}
+}
+
+func TestRunKeyCommand(t *testing.T) {
+	ctx := context.Background()
+	if key, err := RunKeyCommand(ctx, "echo sk-from-cmd"); err != nil || key != "sk-from-cmd" {
+		t.Errorf("got %q, %v", key, err)
+	}
+	// Quotes inside the command reach the shell as written (cmd.exe ignores Go's \" escaping).
+	if key, err := RunKeyCommand(ctx, `echo "sk quoted"`); err != nil || key != `"sk quoted"` && key != "sk quoted" {
+		t.Errorf("quoted: got %q, %v", key, err)
+	}
+	for _, bad := range []string{"exit 3", "echo a && echo b"} {
+		if key, err := RunKeyCommand(ctx, bad); err == nil {
+			t.Errorf("%q: accepted %q", bad, key)
+		}
 	}
 }

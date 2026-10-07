@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"pruefbyte/internal/config"
-	"pruefbyte/internal/ocr"
+	"github.com/feinarbyte/pruefbyte/internal/config"
+	"github.com/feinarbyte/pruefbyte/internal/ocr"
 )
 
 // filterFindings drops findings below review.min_severity or outside

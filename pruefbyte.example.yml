@@ -7,6 +7,10 @@ gitlab:
   token_env: PRUEFBYTE_GITLAB_TOKEN   # env var holding the bot's PAT
 
 llm:
+  # provider and model are better set in the repository's .pruefbyte.yml, where
+  # `pruefbyte local` finds them too; only custom providers (url, protocol) need this file.
+  # A provider set here is fixed: repositories cannot switch the shared API key to
+  # another vendor. Leave it out to let each repository choose.
   provider: anthropic                 # any OCR built-in provider; other names are custom providers
   model: claude-sonnet-5
   api_key_env: PRUEFBYTE_LLM_API_KEY  # env var holding the API key
@@ -19,7 +23,7 @@ llm:
   aws_profile: ""
 
 ocr:
-  binary: ocr
+  binary: ""                          # empty: the ocr built into release binaries, else ocr on the PATH
   effort: medium                      # low | medium | high (review rounds)
   language: English                   # language of the comments
   timeout: 30m                        # whole OCR run
