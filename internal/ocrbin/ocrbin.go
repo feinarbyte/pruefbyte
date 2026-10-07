@@ -31,7 +31,7 @@ var (
 	sum        string // hex sha256 of the uncompressed binary, from OCR's release checksums
 )
 
-// Version is the OCR release pruefbyte is built and tested against, e.g. v1.12.10.
+// Version is the OCR release pruefbyte is built and tested against, e.g. v1.12.12.
 func Version() string { return strings.TrimSpace(versionFile) }
 
 // Available reports whether this build carries an ocr binary.

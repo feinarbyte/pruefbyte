@@ -62,6 +62,8 @@ Settings are layered; later layers win:
 
 The repository file may set `llm.provider` (OCR built-in providers only, and only when the global config does not set one: a provider the operator names keeps the shared API key with that vendor), `llm.model`, `ocr.*` (except `binary` and `extra_args`) and `review.*`. Anything that decides where credentials are sent, or what gets executed, is rejected there: custom providers with their own `llm.url` belong in the global file.
 
+`llm.model` can be any model ID the provider serves. OCR's model lists for its built-in providers are only suggestions: a model that is not listed works, and OCR logs `[ocr] WARNING: model "…" is not in the suggested models for provider "…"; the provider will validate it`. A wrong ID therefore fails at the provider's API, not earlier. (OCR v1.12.10 and older, bundled with pruefbyte 0.1.0, rejected unlisted models.)
+
 Secrets are only ever read from the env vars named by `gitlab.token_env` and `llm.api_key_env`. `ocr` runs with a private, temporary `HOME`, so its config file and session logs never touch the runner.
 
 Example `.pruefbyte.yml`:
