@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/feinarbyte/pruefbyte/internal/gitutil"
 )
@@ -265,5 +266,29 @@ func TestLocalReusesUnchangedFiles(t *testing.T) {
 	}
 	if strings.TrimSpace(gitCmd(t, repo, "status", "--porcelain")) != "" {
 		t.Error("the state was written into the working tree")
+	}
+}
+
+func TestFileStorePrunesOldStates(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "reuse-old.json")
+	os.WriteFile(old, []byte("{}"), 0o600)
+	past := time.Now().Add(-stateMaxAge - time.Hour)
+	os.Chtimes(old, past, past)
+	other := filepath.Join(dir, "unrelated")
+	os.WriteFile(other, nil, 0o600)
+	os.Chtimes(other, past, past)
+	cur := fileStore(filepath.Join(dir, "reuse-cur.json"))
+	if err := cur.Save([]byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("old state kept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("unrelated file removed")
+	}
+	if data, _ := cur.Load(); string(data) != `{"v":1}` {
+		t.Errorf("current state = %q", data)
 	}
 }

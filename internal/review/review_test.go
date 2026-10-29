@@ -27,6 +27,7 @@ type fakeGitLab struct {
 	// rejectLine makes CreateDiscussion fail with 400 for this new_line, failLine with 500.
 	rejectLine, failLine int
 	nextID               int64
+	compareErr           error
 	resolved             []string
 	updates              int
 }
@@ -98,7 +99,7 @@ func (f *fakeGitLab) setResolved(i int, resolved bool) {
 }
 
 func (f *fakeGitLab) Compare(_ context.Context, from, to string) ([]gitlab.FileDiff, error) {
-	return f.compare[from+".."+to], nil
+	return f.compare[from+".."+to], f.compareErr
 }
 
 func (f *fakeGitLab) inline() []gitlab.Discussion {

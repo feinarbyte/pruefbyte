@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -430,5 +431,65 @@ func TestOversizedStateIsNotStored(t *testing.T) {
 	}
 	if summaryBody(summaryData{HeadSHA: "h", State: s}) == "" {
 		t.Error("summary lost")
+	}
+}
+
+// A thread that could not be checked because GitLab failed keeps its file out
+// of the state, so the next run reviews it and tries again.
+func TestThreadNotCheckedKeepsFileOut(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka1", "b.go": "kb1"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"}, ocr.Comment{Path: "a.go", Content: "x", StartLine: 3, EndLine: 3})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.mr.HeadSHA, keys["a.go"] = "head2", "ka2"
+	f.compareErr = errors.New("502 Bad Gateway")
+	o.res = covered([]string{"a.go", "b.go"})
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if s := storedState(t, f); s == nil || s.Files["a.go"].Key != "" || s.Files["b.go"].Key == "" {
+		t.Errorf("want b.go stored and a.go held back, got %+v", s)
+	}
+}
+
+func TestNothingLeftNeedsNothingCompleted(t *testing.T) {
+	p := &reusePlan{reused: map[string]ReusedFile{"a.go": {}}}
+	res := covered([]string{"b.go"})
+	res.Manifest.Coverage.Selected = nil // an OCR that does not report the selection
+	if p.nothingLeft(res) {
+		t.Error("a run that completed b.go counted as nothing left")
+	}
+}
+
+type memStore struct{ data []byte }
+
+func (m *memStore) Load() ([]byte, error)  { return m.data, nil }
+func (m *memStore) Save(data []byte) error { m.data = data; return nil }
+
+func TestFailedLocalFullRunClearsState(t *testing.T) {
+	o := &fakeOCR{res: covered([]string{"a.go"})}
+	store := &memStore{}
+	d := Deps{OCR: o, LoadConfig: constConfig(testConfig()), Log: io.Discard, ReuseStore: store,
+		DiffKeys: func(context.Context, string, string) (map[string]string, error) {
+			return map[string]string{"a.go": "ka"}, nil
+		}}
+	target := LocalTarget{BaseSHA: "base", HeadSHA: "head"}
+	if _, err := Local(context.Background(), d, target, "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if ParseReuseState(store.data) == nil {
+		t.Fatal("state not saved")
+	}
+	o.res, o.err = nil, errors.New("timeout")
+	target.Full = true
+	if _, err := Local(context.Background(), d, target, "/repo"); err == nil {
+		t.Fatal("want an error")
+	}
+	if ParseReuseState(store.data) != nil {
+		t.Error("failed --full run kept the state")
 	}
 }

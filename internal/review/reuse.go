@@ -180,14 +180,16 @@ func planReuse(prev *ReuseState, identity string, keys map[string]string) *reuse
 		}
 	}
 	// An exclude would also hit a changed file that differs only in case.
+	byFold := map[string][]string{}
+	for r := range p.reused {
+		byFold[strings.ToLower(r)] = append(byFold[strings.ToLower(r)], r)
+	}
 	for path := range keys {
 		if _, ok := p.reused[path]; ok {
 			continue
 		}
-		for r := range p.reused {
-			if strings.EqualFold(r, path) {
-				delete(p.reused, r)
-			}
+		for _, r := range byFold[strings.ToLower(path)] {
+			delete(p.reused, r)
 		}
 	}
 	return p
@@ -255,7 +257,8 @@ func (p *reusePlan) nothingLeft(res *ocr.Result) bool {
 	if res.Manifest == nil {
 		return res.Status == "skipped"
 	}
-	return res.Complete() && len(res.Manifest.Coverage.Selected) == 0
+	cov := res.Manifest.Coverage
+	return res.Complete() && len(cov.Selected) == 0 && len(cov.Completed) == 0
 }
 
 // since names what the reused files were covered by, for the log.

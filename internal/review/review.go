@@ -240,12 +240,12 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	// A reused file was not reviewed in this run, whatever OCR reports for it.
 	reviewed := func(path string) bool { return !plan.excluded(path) && res.Reviewed(path) }
 
-	// Files whose open threads this run did not get to resolve must be reviewed
-	// again: reusing them would leave those threads open for good.
+	// Files whose open threads this run did not get to resolve, or failed to,
+	// must be reviewed again: reusing them would leave those threads open for good.
 	hold := map[string]bool{}
 	if cfg.Review.ResolveOutdated {
 		if res.Complete() && st.Failed == 0 {
-			st.Resolved = resolveOutdated(ctx, d.GitLab, state, current, idx, reviewed, mr.HeadSHA, logf)
+			st.Resolved = resolveOutdated(ctx, d.GitLab, state, current, idx, reviewed, mr.HeadSHA, hold, logf)
 		} else {
 			logf("not resolving earlier threads: this review was incomplete")
 			for _, t := range state.open {
@@ -505,9 +505,14 @@ func autoResolvedBefore(replies []gitlab.Note, botID int64) bool {
 // again, in a file this review covered, and whose code changed since the comment
 // was made. Requiring the change keeps an LLM that merely missed the issue this
 // time from closing the thread.
-func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current map[string]bool, idx diffIndex, reviewed func(path string) bool, headSHA string, logf func(string, ...any)) int {
+//
+// A thread it could not check or resolve because GitLab failed adds its file
+// to hold, so the file is reviewed again rather than reused.
+func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current map[string]bool, idx diffIndex, reviewed func(path string) bool,
+	headSHA string, hold map[string]bool, logf func(string, ...any)) int {
 	resolved := 0
 	compares := map[string]map[string][][2]int{}
+	compareFailed := map[string]bool{}
 	for _, t := range s.open {
 		if current[t.fingerprint] || t.reopened || t.pos.HeadSHA == headSHA {
 			continue
@@ -527,9 +532,14 @@ func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current ma
 				diffs, err := api.Compare(ctx, t.pos.HeadSHA, headSHA)
 				if err != nil {
 					logf("warning: %v", err)
+					compareFailed[t.pos.HeadSHA] = true
 				}
 				ranges = touchedOldRanges(diffs)
 				compares[t.pos.HeadSHA] = ranges
+			}
+			if compareFailed[t.pos.HeadSHA] {
+				hold[t.pos.NewPath] = true
+				continue
 			}
 			for _, r := range ranges[t.pos.NewPath] {
 				if t.pos.NewLine >= r[0] && t.pos.NewLine <= r[1] {
@@ -544,6 +554,7 @@ func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current ma
 		msg := fmt.Sprintf("%s the code changed in `%.8s` and this finding was not reported again.", autoResolvedPrefix, headSHA)
 		if err := api.ReplyAndResolve(ctx, t.discussionID, msg); err != nil {
 			logf("warning: resolving discussion %s: %v", t.discussionID, err)
+			hold[t.pos.NewPath] = true
 			continue
 		}
 		resolved++

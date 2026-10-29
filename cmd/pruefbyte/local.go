@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -251,7 +252,32 @@ func (f fileStore) Save(data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), string(f))
+	if err := os.Rename(tmp.Name(), string(f)); err != nil {
+		return err
+	}
+	pruneStates(filepath.Dir(string(f)))
+	return nil
+}
+
+// stateMaxAge is how long the state of a branch nobody reviews locally any
+// more is kept. Branches are not tracked; an old state is merely dropped.
+const stateMaxAge = 30 * 24 * time.Hour
+
+// pruneStates removes state files, and temp files an interrupted Save left
+// behind, that were not written for stateMaxAge.
+func pruneStates(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "reuse-") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > stateMaxAge {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func branchOr(branch, head string) string {
