@@ -237,11 +237,21 @@ func (f fileStore) Save(data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(string(f)), 0o750); err != nil {
 		return err
 	}
-	tmp := string(f) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// A temp file of its own per run: worktrees share this directory, and two
+	// runs may save at once. The last rename wins; both states are valid.
+	tmp, err := os.CreateTemp(filepath.Dir(string(f)), filepath.Base(string(f))+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, string(f))
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), string(f))
 }
 
 func branchOr(branch, head string) string {

@@ -145,16 +145,9 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	if state.summary != nil && cfg.Review.ReuseUnchanged {
 		stored = stateFromNote(state.summary.Body)
 	}
-	var plan *reusePlan
-	if cfg.Review.ReuseUnchanged {
-		prev := stored
-		if opts.Full || slices.Contains(mr.Labels, FullReviewLabel) {
-			logf("full review requested (--full or the %s label): reviewing every file", FullReviewLabel)
-			prev = nil
-		}
-		plan = preparePlan(ctx, d, reuseIdentity(d.OCRVersion, cfg, ro, rules.json), prev, mr.BaseSHA, mr.HeadSHA, logf)
-	}
-	res, err := reviewOrReuse(ctx, d, &ro, rules, plan, cfg.OCR.Timeout, func(p *reusePlan) string {
+	full := opts.Full || slices.Contains(mr.Labels, FullReviewLabel)
+	plan := preparePlan(ctx, d, cfg, ro, rules, stored, full, mr.BaseSHA, mr.HeadSHA, logf)
+	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, func(p *reusePlan) string {
 		return "the review of " + strings.Join(p.reusedHeads(), ", ")
 	}, logf)
 	if err != nil {
@@ -303,18 +296,24 @@ func runOCR(ctx context.Context, d Deps, ro ocr.ReviewOptions, timeout time.Dura
 	return res, err
 }
 
-// reviewOrReuse runs OCR on the files plan does not reuse. They are excluded
-// from OCR's selection only: OCR can still read them for context. When nothing
-// is left, OCR selects no file and makes no LLM call.
-func reviewOrReuse(ctx context.Context, d Deps, ro *ocr.ReviewOptions, rules ruleSet, plan *reusePlan, timeout time.Duration,
+// reviewOrReuse writes the rule file and runs OCR on the files plan does not
+// reuse. Those are excluded from OCR's selection only: OCR can still read them
+// for context. When nothing is left, OCR selects no file and makes no LLM call.
+func reviewOrReuse(ctx context.Context, d Deps, ro ocr.ReviewOptions, rules ruleSet, plan *reusePlan, timeout time.Duration,
 	since func(*reusePlan) string, logf func(string, ...any)) (*ocr.Result, error) {
+	exclude := rules.exclude
 	if plan != nil && len(plan.reused) > 0 {
 		logf("%d file(s) unchanged since %s are not reviewed again", len(plan.reused), since(plan))
-		if err := rules.withExcludes(d, ro, plan.excludes()); err != nil {
-			return nil, err
-		}
+		exclude = append(slices.Clone(exclude), plan.excludes()...)
 	}
-	return runOCR(ctx, d, *ro, timeout)
+	data, err := ocr.RuleJSON(rules.layers, exclude)
+	if err != nil {
+		return nil, err
+	}
+	if ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data); err != nil {
+		return nil, err
+	}
+	return runOCR(ctx, d, ro, timeout)
 }
 
 // gateReason explains why review.fail_on_severity trips for these findings, or "".
@@ -332,23 +331,12 @@ func gateReason(findings []ocr.Comment, r config.Review) string {
 	return ""
 }
 
-// ruleSet is the rule file reviewOptions wrote, so it can be written again
-// with more excludes.
+// ruleSet is the rule file OCR gets: reviewOrReuse writes it, with the reuse
+// excludes added. json is the file without them, for the reuse identity.
 type ruleSet struct {
 	layers  []ocr.RuleFile
 	exclude []string
 	json    []byte
-}
-
-// withExcludes writes the rule file again with extra exclude patterns and
-// points ro at it.
-func (rs ruleSet) withExcludes(d Deps, ro *ocr.ReviewOptions, extra []string) error {
-	data, err := ocr.RuleJSON(rs.layers, append(slices.Clone(rs.exclude), extra...))
-	if err != nil {
-		return err
-	}
-	ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data)
-	return err
 }
 
 func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDir string, d Deps) (ocr.ReviewOptions, ruleSet, error) {
@@ -413,9 +401,6 @@ func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDi
 	}
 	data, err := ocr.RuleJSON(layers, cfg.OCR.Exclude)
 	if err != nil {
-		return ro, ruleSet{}, err
-	}
-	if ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data); err != nil {
 		return ro, ruleSet{}, err
 	}
 	rules := ruleSet{layers: layers, exclude: cfg.OCR.Exclude, json: data}

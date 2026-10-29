@@ -62,7 +62,11 @@ func ParseReuseState(data []byte) *ReuseState {
 
 const statePrefix = "<!-- pruefbyte:state="
 
-var statePattern = regexp.MustCompile(`<!-- pruefbyte:state=([A-Za-z0-9_-]+) -->`)
+// statePattern only matches the marker as the note's last line, where
+// stateSuffix puts it. The note also quotes model output (findings, warnings,
+// errors), which could contain marker-like text; none of it can end the note
+// on a line of its own.
+var statePattern = regexp.MustCompile(`\n<!-- pruefbyte:state=([A-Za-z0-9_-]+) -->\n?$`)
 
 // stateMarker renders s as a hidden comment for the summary note.
 func stateMarker(s *ReuseState) string {
@@ -82,11 +86,11 @@ func stateMarker(s *ReuseState) string {
 
 // stateFromNote reads the state stateMarker wrote into a summary note.
 func stateFromNote(body string) *ReuseState {
-	ms := statePattern.FindAllStringSubmatch(body, -1)
-	if len(ms) == 0 {
+	m := statePattern.FindStringSubmatch(body)
+	if m == nil {
 		return nil
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(ms[len(ms)-1][1])
+	raw, err := base64.RawURLEncoding.DecodeString(m[1])
 	if err != nil {
 		return nil
 	}
@@ -216,10 +220,16 @@ func (p *reusePlan) next(res *ocr.Result, head string) *ReuseState {
 	return s
 }
 
-// nothingLeft reports whether every file OCR would have reviewed was reused.
+// nothingLeft reports whether every file OCR would have reviewed was reused:
+// OCR selected nothing. Without a manifest only OCR's "no files" result says so.
 func (p *reusePlan) nothingLeft(res *ocr.Result) bool {
-	return p != nil && len(p.reused) > 0 && res != nil && res.Complete() &&
-		(res.Manifest == nil || len(res.Manifest.Coverage.Selected) == 0)
+	if p == nil || len(p.reused) == 0 || res == nil || len(res.Comments) > 0 {
+		return false
+	}
+	if res.Manifest == nil {
+		return res.Status == "skipped"
+	}
+	return res.Complete() && len(res.Manifest.Coverage.Selected) == 0
 }
 
 // reusedHeads lists the commits the reused files were reviewed at, shortened.
@@ -238,13 +248,21 @@ func (p *reusePlan) reusedHeads() []string {
 	return heads
 }
 
-// preparePlan computes the reuse plan for a review of base..head, or nil when
-// the changed files cannot be keyed (then everything is reviewed and nothing
-// is stored).
-func preparePlan(ctx context.Context, d Deps, identity string, prev *ReuseState, base, head string, logf func(string, ...any)) *reusePlan {
-	if d.DiffKeys == nil {
+// preparePlan computes the reuse plan for a review of base..head from the
+// stored state, or returns nil when reuse is off or the changed files cannot be
+// keyed (then everything is reviewed and nothing new is stored). full ignores
+// the stored state, so every file is reviewed and the state replaced.
+func preparePlan(ctx context.Context, d Deps, cfg config.Config, ro ocr.ReviewOptions, rules ruleSet, stored *ReuseState, full bool,
+	base, head string, logf func(string, ...any)) *reusePlan {
+	if !cfg.Review.ReuseUnchanged || d.DiffKeys == nil {
 		return nil
 	}
+	prev := stored
+	if full {
+		logf("full review requested: reviewing every file")
+		prev = nil
+	}
+	identity := reuseIdentity(d.OCRVersion, cfg, ro, rules.json)
 	keys, err := d.DiffKeys(ctx, base, head)
 	if err != nil {
 		logf("warning: reviewing every file: %v", err)

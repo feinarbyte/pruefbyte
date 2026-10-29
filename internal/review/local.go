@@ -55,18 +55,18 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 		return nil, err
 	}
 	var plan *reusePlan
-	if cfg.Review.ReuseUnchanged && d.ReuseStore != nil {
-		var prev *ReuseState
-		if !t.Full {
+	if d.ReuseStore != nil {
+		var stored *ReuseState
+		if cfg.Review.ReuseUnchanged && !t.Full {
 			data, err := d.ReuseStore.Load()
 			if err != nil {
 				logf("warning: reviewing every file: reading the last run's state: %v", err)
 			}
-			prev = ParseReuseState(data)
+			stored = ParseReuseState(data)
 		}
-		plan = preparePlan(ctx, d, reuseIdentity(d.OCRVersion, cfg, ro, rules.json), prev, t.BaseSHA, t.HeadSHA, logf)
+		plan = preparePlan(ctx, d, cfg, ro, rules, stored, t.Full, t.BaseSHA, t.HeadSHA, logf)
 	}
-	res, err := reviewOrReuse(ctx, d, &ro, rules, plan, cfg.OCR.Timeout, func(*reusePlan) string { return "the last run" }, logf)
+	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, func(*reusePlan) string { return "the last run" }, logf)
 	if err != nil {
 		// ocr's output has already streamed to d.Log; repeating it would only add noise.
 		var re *ocr.RunError
