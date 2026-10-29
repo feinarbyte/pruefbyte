@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -328,7 +329,7 @@ func TestCommentUnderAnotherSpellingKeepsFileOut(t *testing.T) {
 	p := &reusePlan{identity: "id", keys: map[string]string{"new.go": "kn", "b.go": "kb"}, reused: map[string]ReusedFile{}}
 	res := covered(nil, ocr.Comment{Path: "old.go", Content: "x"}, ocr.Comment{Path: "./B.go", Content: "y"})
 	res.Manifest.Coverage.Completed = []ocr.CoveredItem{{Path: "new.go", OldPath: "old.go"}, {Path: "b.go"}}
-	if s := p.next(res, "h"); len(s.Files) != 0 {
+	if s := p.next(res, "h", nil); len(s.Files) != 0 {
 		t.Errorf("files with comments stored: %v", s.Files)
 	}
 }
@@ -372,5 +373,62 @@ func TestLocalPrintsWarningsWhenNothingLeft(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("output misses %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// A run that cannot resolve threads must not mark their files as clean, or the
+// threads would never be looked at again.
+func TestUnresolvedThreadFileIsNotStored(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka1", "b.go": "kb1"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"}, ocr.Comment{Path: "a.go", Content: "x", StartLine: 3, EndLine: 3})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// a.go changes and is clean now, but posting on b.go fails: no resolution.
+	f.mr.HeadSHA, keys["a.go"], keys["b.go"] = "head2", "ka2", "kb2"
+	f.failLine = 4
+	o.res = covered([]string{"a.go", "b.go"}, ocr.Comment{Path: "b.go", Content: "y", StartLine: 2, EndLine: 2})
+	f.diffs[1].Diff = "@@ -0,0 +1,4 @@\n+x\n+y\n+z\n+w\n"
+	o.res.Comments[0].StartLine, o.res.Comments[0].EndLine = 4, 4
+	if _, err := Run(ctx, d, Options{}); err == nil {
+		t.Fatal("want the failed post reported")
+	}
+	if s := storedState(t, f); s != nil && s.Files["a.go"].Key != "" {
+		t.Errorf("a.go stored although its thread was not checked: %+v", s.Files)
+	}
+}
+
+func TestFailedFullReviewDropsState(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, map[string]string{"a.go": "ka", "b.go": "kb"})
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	o.res, o.err = nil, errors.New("timeout")
+	if _, err := Run(ctx, d, Options{Full: true}); err == nil {
+		t.Fatal("want an error")
+	}
+	if s := storedState(t, f); s != nil {
+		t.Errorf("failed full review kept the state: %+v", s.Files)
+	}
+}
+
+func TestOversizedStateIsNotStored(t *testing.T) {
+	s := &ReuseState{Version: reuseVersion, Identity: "id", Files: map[string]ReusedFile{}}
+	for i := 0; len(stateMarker(s)) > 0 && i < 100000; i += 1000 {
+		for j := i; j < i+1000; j++ {
+			s.Files[fmt.Sprintf("dir%d/file%d.go", j, j)] = ReusedFile{Key: fmt.Sprintf("%032x", j*7919), At: fmt.Sprintf("%040x", j)}
+		}
+	}
+	if m := stateMarker(s); m != "" {
+		t.Fatalf("marker of %d files is %d bytes", len(s.Files), len(m))
+	}
+	if summaryBody(summaryData{HeadSHA: "h", State: s}) == "" {
+		t.Error("summary lost")
 	}
 }

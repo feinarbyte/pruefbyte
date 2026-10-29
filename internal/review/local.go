@@ -56,15 +56,11 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 	}
 	var plan *reusePlan
 	if d.ReuseStore != nil {
-		var stored *ReuseState
-		if cfg.Review.ReuseUnchanged && !t.Full {
-			data, err := d.ReuseStore.Load()
-			if err != nil {
-				logf("warning: reviewing every file: reading the last run's state: %v", err)
-			}
-			stored = ParseReuseState(data)
+		data, err := d.ReuseStore.Load()
+		if err != nil {
+			logf("warning: reviewing every file: reading the last run's state: %v", err)
 		}
-		plan = preparePlan(ctx, d, cfg, ro, rules, stored, t.Full, t.BaseSHA, t.HeadSHA, logf)
+		plan = preparePlan(ctx, d, cfg, ro, rules, ParseReuseState(data), t.Full, t.BaseSHA, t.HeadSHA, logf)
 	}
 	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, true, logf)
 	if err != nil {
@@ -87,7 +83,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 	out := &LocalOutcome{Result: res, Findings: findings, GateReason: gateReason(findings, cfg.Review)}
 	if plan != nil {
 		out.Reused, out.NothingLeft = len(plan.reused), plan.nothingLeft(res)
-		if data, err := json.Marshal(plan.next(res, t.HeadSHA)); err == nil {
+		if data, err := json.Marshal(plan.next(res, t.HeadSHA, nil)); err == nil {
 			if err := d.ReuseStore.Save(data); err != nil {
 				logf("warning: saving the state for the next run: %v", err)
 			}

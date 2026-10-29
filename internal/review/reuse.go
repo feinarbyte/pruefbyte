@@ -82,8 +82,19 @@ func stateMarker(s *ReuseState) string {
 	zw := gzip.NewWriter(&buf)
 	_, _ = zw.Write(data)
 	_ = zw.Close()
-	return statePrefix + base64.RawURLEncoding.EncodeToString(buf.Bytes()) + " -->"
+	enc := base64.RawURLEncoding.EncodeToString(buf.Bytes())
+	// GitLab rejects notes over 1,000,000 characters, and the note also lists
+	// findings. On a merge request that large, keep no state rather than lose
+	// the summary.
+	if len(enc) > maxStateLen {
+		return ""
+	}
+	return statePrefix + enc + " -->"
 }
+
+// maxStateLen bounds the encoded state in the summary note (a few thousand
+// files per 100 KB).
+const maxStateLen = 400_000
 
 // stateFromNote reads the state stateMarker wrote into a summary note.
 func stateFromNote(body string) *ReuseState {
@@ -204,8 +215,9 @@ func (p *reusePlan) excluded(path string) bool {
 // the files OCR completed this time without a single comment or warning. A file
 // OCR commented on is reviewed again next time: its findings, the gate they may
 // trip and the summary lines they may need are only ever produced by a review,
-// and once fixed the file's diff changes anyway.
-func (p *reusePlan) next(res *ocr.Result, head string) *ReuseState {
+// and once fixed the file's diff changes anyway. Files in hold are not stored
+// either: something besides OCR's verdict still needs a review of them.
+func (p *reusePlan) next(res *ocr.Result, head string, hold map[string]bool) *ReuseState {
 	s := &ReuseState{Version: reuseVersion, Identity: p.identity, Files: map[string]ReusedFile{}}
 	for path, f := range p.reused {
 		s.Files[path] = f
@@ -227,7 +239,7 @@ func (p *reusePlan) next(res *ocr.Result, head string) *ReuseState {
 		if flagged[norm(it.Path)] || it.OldPath != "" && flagged[norm(it.OldPath)] {
 			continue
 		}
-		if k := p.keys[it.Path]; k != "" && excludable(it.Path) && !p.excluded(it.Path) {
+		if k := p.keys[it.Path]; k != "" && !hold[it.Path] && excludable(it.Path) && !p.excluded(it.Path) {
 			s.Files[it.Path] = ReusedFile{Key: k, At: head}
 		}
 	}

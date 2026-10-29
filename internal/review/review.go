@@ -164,7 +164,12 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 				msg = d.Redact(msg)
 			}
 			// The files the stored state lists are still covered: keep it.
-			if perr := upsertSummary(ctx, d.GitLab, state, summaryBody(summaryData{HeadSHA: mr.HeadSHA, Failure: msg, State: stored})); perr != nil {
+			// A failed full review still discards the state it was asked to replace.
+			keep := stored
+			if full {
+				keep = nil
+			}
+			if perr := upsertSummary(ctx, d.GitLab, state, summaryBody(summaryData{HeadSHA: mr.HeadSHA, Failure: msg, State: keep})); perr != nil {
 				logf("warning: posting failure note: %v", perr)
 			}
 		}
@@ -235,11 +240,17 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	// A reused file was not reviewed in this run, whatever OCR reports for it.
 	reviewed := func(path string) bool { return !plan.excluded(path) && res.Reviewed(path) }
 
+	// Files whose open threads this run did not get to resolve must be reviewed
+	// again: reusing them would leave those threads open for good.
+	hold := map[string]bool{}
 	if cfg.Review.ResolveOutdated {
 		if res.Complete() && st.Failed == 0 {
 			st.Resolved = resolveOutdated(ctx, d.GitLab, state, current, idx, reviewed, mr.HeadSHA, logf)
 		} else {
 			logf("not resolving earlier threads: this review was incomplete")
+			for _, t := range state.open {
+				hold[t.pos.NewPath] = true
+			}
 		}
 	}
 
@@ -251,7 +262,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		next = nil // a full review replaces what is kept, even when it cannot store anything new
 	}
 	if plan != nil {
-		next = plan.next(res, mr.HeadSHA)
+		next = plan.next(res, mr.HeadSHA, hold)
 		st.Reused = len(plan.reused)
 	}
 	if next != nil && len(next.Files) == 0 {
