@@ -96,6 +96,11 @@ func stateMarker(s *ReuseState) string {
 // files per 100 KB).
 const maxStateLen = 400_000
 
+// withoutState removes the state marker from a summary note's body.
+func withoutState(body string) string {
+	return statePattern.ReplaceAllString(body, "\n")
+}
+
 // stateFromNote reads the state stateMarker wrote into a summary note.
 func stateFromNote(body string) *ReuseState {
 	m := statePattern.FindStringSubmatch(body)
@@ -218,24 +223,33 @@ func (p *reusePlan) excluded(path string) bool {
 // OCR commented on is reviewed again next time: its findings, the gate they may
 // trip and the summary lines they may need are only ever produced by a review,
 // and once fixed the file's diff changes anyway. Files in hold are not stored
-// either: something besides OCR's verdict still needs a review of them.
+// either: something besides OCR's verdict still needs a review of them. Both
+// rules also drop reused files, e.g. one that another file's review commented on.
 func (p *reusePlan) next(res *ocr.Result, head string, hold map[string]bool) *ReuseState {
 	s := &ReuseState{Version: reuseVersion, Identity: p.identity, Files: map[string]ReusedFile{}}
-	for path, f := range p.reused {
-		s.Files[path] = f
-	}
-	if res == nil || res.Manifest == nil {
-		return s
-	}
 	// Compared loosely, so a comment that spells the path differently (case,
 	// "./", the old path of a rename) still keeps the file from being stored.
 	norm := func(s string) string { return strings.ToLower(path.Clean(strings.TrimPrefix(s, "./"))) }
 	flagged := map[string]bool{}
-	for _, c := range res.Comments {
-		flagged[norm(c.Path)] = true
+	degraded := false // a warning about the run, not one file: trust no new verdict
+	if res != nil {
+		for _, c := range res.Comments {
+			flagged[norm(c.Path)] = true
+		}
+		for _, w := range res.Warnings {
+			if strings.TrimSpace(w.File) == "" {
+				degraded = true
+			}
+			flagged[norm(w.File)] = true
+		}
 	}
-	for _, w := range res.Warnings {
-		flagged[norm(w.File)] = true
+	for path, f := range p.reused {
+		if !flagged[norm(path)] && !hold[path] {
+			s.Files[path] = f
+		}
+	}
+	if res == nil || res.Manifest == nil || degraded {
+		return s
 	}
 	for _, it := range res.Manifest.Coverage.Completed {
 		if flagged[norm(it.Path)] || it.OldPath != "" && flagged[norm(it.OldPath)] {

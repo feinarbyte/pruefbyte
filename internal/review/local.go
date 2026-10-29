@@ -65,7 +65,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, true, logf)
 	if err != nil {
 		// Like CI: a failed --full run still discards the state it was to replace.
-		if plan != nil && t.Full {
+		if d.ReuseStore != nil && t.Full {
 			if serr := d.ReuseStore.Save(nil); serr != nil {
 				logf("warning: clearing the state of earlier runs: %v", serr)
 			}

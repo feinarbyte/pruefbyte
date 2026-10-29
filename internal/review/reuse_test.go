@@ -493,3 +493,61 @@ func TestFailedLocalFullRunClearsState(t *testing.T) {
 		t.Error("failed --full run kept the state")
 	}
 }
+
+func TestRunWarningStoresNoNewFiles(t *testing.T) {
+	p := &reusePlan{identity: "id", keys: map[string]string{"a.go": "ka", "b.go": "kb"},
+		reused: map[string]ReusedFile{"r.go": {Key: "kr", At: "h0"}}}
+	res := covered([]string{"a.go", "b.go"})
+	res.Status = "completed_with_warnings"
+	res.Warnings = []ocr.Warning{{Type: "truncated", Message: "findings may be missing"}}
+	s := p.next(res, "h1", nil)
+	if len(s.Files) != 1 || s.Files["r.go"].Key != "kr" {
+		t.Errorf("want only the reused r.go kept, got %v", s.Files)
+	}
+}
+
+func TestReusedFileWithCommentOrHoldIsDropped(t *testing.T) {
+	p := &reusePlan{identity: "id", keys: map[string]string{}, reused: map[string]ReusedFile{
+		"c.go": {Key: "kc"}, "h.go": {Key: "kh"}, "ok.go": {Key: "ko"}}}
+	res := covered(nil, ocr.Comment{Path: "c.go", Content: "seen from another file's review"})
+	s := p.next(res, "h", map[string]bool{"h.go": true})
+	if len(s.Files) != 1 || s.Files["ok.go"].Key != "ko" {
+		t.Errorf("want only ok.go kept, got %v", s.Files)
+	}
+}
+
+func TestFailedFullReviewDropsStateWithoutFailureNote(t *testing.T) {
+	f := newFake()
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, map[string]string{"a.go": "ka", "b.go": "kb"})
+	cfg := testConfig()
+	cfg.Review.PostFailures = false
+	d.LoadConfig = constConfig(cfg)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.summary()
+	o.res, o.err = nil, errors.New("timeout")
+	if _, err := Run(ctx, d, Options{Full: true}); err == nil {
+		t.Fatal("want an error")
+	}
+	if s := storedState(t, f); s != nil {
+		t.Errorf("state kept: %+v", s.Files)
+	}
+	if !strings.HasPrefix(f.summary(), strings.TrimSpace(withoutState(before))) || strings.Contains(f.summary(), "failed") {
+		t.Errorf("summary changed beyond the state:\n%s", f.summary())
+	}
+}
+
+func TestFailedLocalFullRunClearsStateWithoutPlan(t *testing.T) {
+	store := &memStore{data: []byte(`{"v":1,"id":"x","files":{"a.go":{"k":"ka"}}}`)}
+	d := Deps{OCR: &fakeOCR{err: errors.New("timeout")}, LoadConfig: constConfig(testConfig()), Log: io.Discard, ReuseStore: store,
+		DiffKeys: func(context.Context, string, string) (map[string]string, error) { return nil, errors.New("no keys") }}
+	if _, err := Local(context.Background(), d, LocalTarget{BaseSHA: "b", HeadSHA: "h", Full: true}, "/repo"); err == nil {
+		t.Fatal("want an error")
+	}
+	if ParseReuseState(store.data) != nil {
+		t.Error("failed --full run without a plan kept the state")
+	}
+}

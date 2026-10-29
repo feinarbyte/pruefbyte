@@ -172,6 +172,11 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 			if perr := upsertSummary(ctx, d.GitLab, state, summaryBody(summaryData{HeadSHA: mr.HeadSHA, Failure: msg, State: keep})); perr != nil {
 				logf("warning: posting failure note: %v", perr)
 			}
+		} else if full && stored != nil {
+			// No failure note, but the state still has to go: edit it out of the summary.
+			if perr := upsertSummary(ctx, d.GitLab, state, withoutState(state.summary.Body)); perr != nil {
+				logf("warning: clearing the stored state: %v", perr)
+			}
 		}
 		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
