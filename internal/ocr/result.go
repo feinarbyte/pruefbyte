@@ -20,13 +20,15 @@ type Result struct {
 // Manifest is the part of OCR's run manifest (range reviews) pruefbyte reads.
 type Manifest struct {
 	Coverage struct {
+		Selected  []CoveredItem `json:"selected"`
 		Completed []CoveredItem `json:"completed"`
 		Reused    []CoveredItem `json:"reused"`
 	} `json:"coverage"`
 }
 
 type CoveredItem struct {
-	Path string `json:"path"`
+	Path    string `json:"path"`
+	OldPath string `json:"old_path,omitempty"`
 }
 
 type LLMInfo struct {

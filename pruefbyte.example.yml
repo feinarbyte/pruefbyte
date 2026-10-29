@@ -43,6 +43,7 @@ review:
   resolve_outdated: true              # resolve own threads once the flagged code changed
   fail_on_severity: ""                # e.g. critical: fail the job (exit 3)
   post_failures: true                 # post a note when the review fails
+  reuse_unchanged: true               # skip files whose diff did not change since the last review
 
 # pruefbyte reviews whenever it is run. When it runs (drafts, labels, authors,
 # branches, ...) is decided by the CI job's rules: see the README.

@@ -161,6 +161,12 @@ type summaryData struct {
 	Warnings    []ocr.Warning
 	Failure     string
 	Incomplete  bool
+	// ReusedFrom lists the heads whose reviews covered Stats.Reused files.
+	ReusedFrom []string
+	// NothingLeft: every file was reused, OCR reviewed none.
+	NothingLeft bool
+	// State is stored in the note for the next review; nil stores none.
+	State *ReuseState
 }
 
 func summaryBody(d summaryData) string {
@@ -173,13 +179,25 @@ func summaryBody(d summaryData) string {
 	if d.Failure != "" {
 		f := fence(d.Failure)
 		fmt.Fprintf(&b, "⚠️ The review of `%s` failed.\n\n<details><summary>Error</summary>\n\n%s\n%s\n%s\n\n</details>\n", sha, f, d.Failure, f)
-		return b.String()
+		return b.String() + stateSuffix(d.State)
 	}
-	fmt.Fprintf(&b, "Reviewed `%s`", sha)
-	if d.Model != "" {
-		fmt.Fprintf(&b, " with `%s`", d.Model)
+	from := "`" + strings.Join(d.ReusedFrom, "`, `") + "`"
+	if d.NothingLeft {
+		fmt.Fprintf(&b, "Checked `%s`: every file to review is unchanged since the review of %s, so nothing was sent to the model. "+
+			"%d file(s) are covered by that review.\n", sha, from, d.Stats.Reused)
+	} else {
+		fmt.Fprintf(&b, "Reviewed `%s`", sha)
+		if d.Model != "" {
+			fmt.Fprintf(&b, " with `%s`", d.Model)
+		}
+		fmt.Fprintf(&b, ": %d new inline comment(s), %d already posted earlier.\n", d.Stats.Posted, d.Stats.Duplicates)
+		if d.Stats.Reused > 0 {
+			fmt.Fprintf(&b, "\n%d file(s) unchanged since the review of %s were not reviewed again.\n", d.Stats.Reused, from)
+		}
 	}
-	fmt.Fprintf(&b, ": %d new inline comment(s), %d already posted earlier.\n", d.Stats.Posted, d.Stats.Duplicates)
+	if d.Stats.Reused > 0 {
+		fmt.Fprintf(&b, "\nAdd the `%s` label to review every file again.\n", FullReviewLabel)
+	}
 	if d.Incomplete {
 		b.WriteString("\n⚠️ The review did not complete for every file; see the job log.\n")
 	}
@@ -214,8 +232,16 @@ func summaryBody(d summaryData) string {
 		}
 		b.WriteString("\n</details>\n")
 	}
-	if len(d.Unplaced)+len(d.Overflow)+len(d.Failed)+len(d.Warnings) == 0 && !d.Incomplete {
+	if len(d.Unplaced)+len(d.Overflow)+len(d.Failed)+len(d.Warnings) == 0 && !d.Incomplete && !d.NothingLeft {
 		b.WriteString("\nAll findings are posted inline.\n")
 	}
-	return b.String()
+	return b.String() + stateSuffix(d.State)
+}
+
+// stateSuffix appends the hidden reuse state to a summary note.
+func stateSuffix(s *ReuseState) string {
+	if m := stateMarker(s); m != "" {
+		return "\n" + m + "\n"
+	}
+	return ""
 }

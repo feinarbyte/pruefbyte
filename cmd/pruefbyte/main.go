@@ -211,6 +211,7 @@ type reviewFlags struct {
 	repoDir     string
 	dryRun      bool
 	artifactDir string
+	full        bool
 }
 
 func reviewCmd(g *globalFlags) *cobra.Command {
@@ -228,6 +229,7 @@ CI variables; outside CI pass --project and --mr and run from a clone of the rep
 	cmd.Flags().Int64Var(&f.mr, "mr", 0, "merge request IID (default: CI_MERGE_REQUEST_IID)")
 	cmd.Flags().StringVar(&f.repoDir, "repo", "", "path of the git clone (default: CI_PROJECT_DIR or cwd)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "print the comments instead of posting them")
+	cmd.Flags().BoolVar(&f.full, "full", false, "review every file, also those unchanged since the last review (like the "+review.FullReviewLabel+" label)")
 	cmd.Flags().StringVar(&f.artifactDir, "artifact-dir", os.Getenv("PRUEFBYTE_ARTIFACT_DIR"), "directory to keep ocr-result.json in (env PRUEFBYTE_ARTIFACT_DIR)")
 	return cmd
 }
@@ -305,6 +307,8 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 			return repo.EnsureCommits(ctx, []string{fmt.Sprintf("refs/merge-requests/%d/head", mrc.MRIID)}, shas...)
 		},
 		ReadFileAt: repo.ShowFile,
+		DiffKeys:   repo.DiffKeys,
+		OCRVersion: v,
 		Redact: func(s string) string {
 			for _, secret := range []string{apiKey, token} {
 				if len(secret) >= 4 {
@@ -323,11 +327,11 @@ func runReview(ctx context.Context, g *globalFlags, f *reviewFlags) error {
 		}
 	}
 
-	out, err := review.Run(ctx, deps, review.Options{RepoDir: mrc.RepoDir, ExpectedHeadSHA: mrc.HeadSHA})
+	out, err := review.Run(ctx, deps, review.Options{RepoDir: mrc.RepoDir, ExpectedHeadSHA: mrc.HeadSHA, Full: f.full})
 	if out != nil && out.Skipped == "" {
 		s := out.Stats
-		fmt.Fprintf(os.Stderr, "[pruefbyte] findings=%d posted=%d duplicates=%d outside_diff=%d over_limit=%d failed=%d resolved=%d\n",
-			s.Findings, s.Posted, s.Duplicates, s.Unplaced, s.Overflow, s.Failed, s.Resolved)
+		fmt.Fprintf(os.Stderr, "[pruefbyte] findings=%d posted=%d duplicates=%d outside_diff=%d over_limit=%d failed=%d resolved=%d reused_files=%d\n",
+			s.Findings, s.Posted, s.Duplicates, s.Unplaced, s.Overflow, s.Failed, s.Resolved, s.Reused)
 	}
 	if err != nil {
 		return err

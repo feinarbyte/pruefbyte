@@ -8,6 +8,7 @@ from a dedicated bot account.
 
 - Findings are anchored to the right diff line, with GitLab "apply suggestion" blocks where possible.
 - Re-running the pipeline never duplicates a comment.
+- A push only sends the files whose diff changed to the model; files reviewed cleanly before are not reviewed again.
 - The bot resolves its own threads once the flagged code has changed and the finding is gone.
 - Findings that can't be placed on the diff, or that go over the comment limit, go into a single summary note, which is updated in place.
 - Works with every LLM provider OCR supports (Anthropic, OpenAI, Bedrock, DashScope, OpenRouter, …) and with any OpenAI- or Anthropic-compatible endpoint.
@@ -111,6 +112,12 @@ pruefbyte-review:
 Overriding `rules:` replaces the template's list, so keep its first two entries
 (merge trains, fork pipelines). To review on demand only, use `when: manual`.
 
+The `pruefbyte-full` label works the other way round: it does not decide whether the
+job runs, but makes pruefbyte review every file of the merge request again instead of
+reusing earlier reviews (see [Reusing earlier reviews](#reusing-earlier-reviews)).
+pruefbyte reads it from the merge request when the job runs, so add it and rerun the
+job. It applies to every pipeline while it is set; remove it to go back to reuse.
+
 ## Behaviour
 
 | Situation | What happens |
@@ -122,7 +129,44 @@ Overriding `rules:` replaces the template's list, so keep its first two entries
 | Same finding as an earlier run (open or resolved) | Not posted again. Matched by a hidden fingerprint of file + the code the finding quotes (its text if it quotes none), so rewording doesn't count as new. |
 | Earlier bot thread not reported again **and** its code changed | Reply and resolve, but only after a complete review that covered the file, and only once: a thread someone reopens stays open. |
 | OCR fails | A failure note with the redacted error; job exits 1. |
+| File's diff unchanged since a review that found nothing in it | Not sent to the model again; the summary note says how many files were reused and from which review. Its threads stay as they are. |
 | `review.fail_on_severity` reached | Comments are posted; job exits 3. |
+
+## Reusing earlier reviews
+
+Fix rounds after review findings usually change a few files, yet each pipeline would
+review the whole diff again. With `review.reuse_unchanged: true` (the default),
+pruefbyte only sends OCR the files that need it:
+
+- A file is reused when its diff is the same as in an earlier review that completed it
+  and reported nothing for it: same path, same blob at the merge request's base and at
+  its head (so a rebase that changes the file on either side reviews it again).
+- The settings must also be the same: OCR version, provider, model, effort, language,
+  `ocr.extra_args`, and the rules and excludes from `.pruefbyte.yml`, `ocr.rule_file`
+  and `.opencodereview/rule.json`. Changing any of them reviews every file. Editing the
+  merge request's description does not. A file that `ocr.extra_args` names counts by its
+  path only: after editing it, run one full review.
+- A file OCR commented on, or warned about, is always reviewed again. Its findings, the
+  `review.fail_on_severity` gate and the summary note only ever come from a review, and
+  once you fix the finding the file's diff changes anyway.
+- After an incomplete review (timeout, `ocr.max_tokens_budget`, failed groups), only
+  the files OCR completed count as reviewed; the next pipeline reviews the rest.
+- Reused files are only left out of OCR's selection. OCR still reads them when a changed
+  file needs them as context.
+- A thread on a reused file is neither resolved nor posted again; only a review that
+  covers the file again can resolve it.
+
+If nothing but reused files is left, OCR makes no LLM call, and the summary note says
+so. What each review covered is kept in a hidden, versioned marker in the bot's summary
+note, so it needs no cache or artifacts. pruefbyte therefore creates that note whenever
+there is something to keep, not only when it has findings to list.
+
+**Trade-off.** A change in one file can break another file whose diff did not change,
+for example a changed function signature that an unchanged caller now uses wrongly.
+The unchanged file is not reviewed again, and its earlier review saw the old version of
+the other file. Review everything again with the `pruefbyte-full` label (or
+`pruefbyte review --full`), or set `review.reuse_unchanged: false` to always review
+the whole diff. A full review replaces what is kept.
 
 ## Local review
 
@@ -147,6 +191,13 @@ works as a pre-push hook. If you edit `.pruefbyte.yml` on your branch, the run t
 you that CI, and so the local run, uses the target branch's version until your change
 is merged. One difference remains: CI gives OCR the merge request's title and
 description as background; locally the branch name and commit messages stand in.
+
+Like CI, a rerun does not review files again whose diff is unchanged since the last
+run on the same branch and target, and in which that run found nothing
+(see [Reusing earlier reviews](#reusing-earlier-reviews)). This is kept in the
+repository's git directory (`pruefbyte/` under `git rev-parse --git-common-dir`),
+which all worktrees share and which is never committed. A different `--target`, or
+a detached HEAD, reviews every file; `--full` does so on demand.
 
 The API key is the first one found of:
 1. the env var named by `llm.api_key_env` (`PRUEFBYTE_LLM_API_KEY`),

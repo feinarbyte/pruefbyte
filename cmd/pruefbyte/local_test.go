@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/feinarbyte/pruefbyte/internal/gitutil"
 )
@@ -183,5 +185,110 @@ func TestRepoProviderVersusEnv(t *testing.T) {
 	t.Setenv("PRUEFBYTE_LLM_PROVIDER", "openai")
 	if _, err := load(context.Background(), base); err == nil || !strings.Contains(err.Error(), "PRUEFBYTE_LLM_PROVIDER") {
 		t.Errorf("env provider silently replaced the repository's: %v", err)
+	}
+}
+
+// TestLocalReusesUnchangedFiles runs `local` repeatedly on one branch: files
+// whose diff did not change since a clean review are excluded from OCR's
+// selection, per branch and target, unless --full.
+func TestLocalReusesUnchangedFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	gitCmd(t, repo, "init", "-q", "-b", "main")
+	os.WriteFile(filepath.Join(repo, ".pruefbyte.yml"), []byte("llm:\n  provider: anthropic\n  model: claude-sonnet-5\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "b.go"), []byte("package b\n"), 0o644)
+	gitCmd(t, repo, "add", ".")
+	gitCmd(t, repo, "commit", "-qm", "base")
+	gitCmd(t, repo, "branch", "other-target")
+	gitCmd(t, repo, "switch", "-qc", "feature")
+	os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n\nvar A = 1\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "b.go"), []byte("package b\n\nvar B = 1\n"), 0o644)
+	gitCmd(t, repo, "commit", "-qam", "change")
+
+	dir := t.TempDir()
+	global := filepath.Join(dir, "pruefbyte.yml")
+	os.WriteFile(global, []byte(fmt.Sprintf("ocr:\n  binary: %q\n", os.Args[0])), 0o644)
+	for k, v := range map[string]string{
+		"FAKE_OCR": "1", "FAKE_OCR_ARGS": filepath.Join(dir, "args.txt"), "FAKE_OCR_CAPTURE": filepath.Join(dir, "run"),
+		"PRUEFBYTE_LLM_API_KEY": "sk-ant-test",
+		"FAKE_OCR_RESULT": `{"status": "success", "llm": {"model": "claude-sonnet-5"}, "comments": [],
+			"manifest": {"coverage": {"selected": [{"path": "a.go"}, {"path": "b.go"}], "completed": [{"path": "a.go"}, {"path": "b.go"}]}}}`,
+	} {
+		t.Setenv(k, v)
+	}
+	excluded := func(args ...string) (string, []string) {
+		t.Helper()
+		os.Remove(filepath.Join(dir, "run.rule.json"))
+		var stdout strings.Builder
+		cmd := rootCmd()
+		cmd.SetArgs(append([]string{"local", "--repo", repo, "--committed", "--config", global}, args...))
+		cmd.SetOut(&stdout)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("local %v: %v", args, err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "run.rule.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rf struct{ Exclude []string }
+		if err := json.Unmarshal(data, &rf); err != nil {
+			t.Fatal(err)
+		}
+		var files []string
+		for _, e := range rf.Exclude {
+			if strings.HasSuffix(e, ".go") {
+				files = append(files, e)
+			}
+		}
+		return stdout.String(), files
+	}
+
+	if _, ex := excluded("--target", "main"); len(ex) != 0 {
+		t.Fatalf("first run excluded %v", ex)
+	}
+	out, ex := excluded("--target", "main")
+	if strings.Join(ex, ",") != "a.go,b.go" || !strings.Contains(out, "2 file(s) unchanged since the last run") {
+		t.Errorf("second run: excluded %v, output:\n%s", ex, out)
+	}
+	if _, ex := excluded("--target", "other-target"); len(ex) != 0 {
+		t.Errorf("another target reused the state: %v", ex)
+	}
+	os.WriteFile(filepath.Join(repo, "b.go"), []byte("package b\n\nvar B = 2\n"), 0o644)
+	gitCmd(t, repo, "commit", "-qam", "change b")
+	if _, ex := excluded("--target", "main"); strings.Join(ex, ",") != "a.go" {
+		t.Errorf("after changing b.go: excluded %v, want a.go", ex)
+	}
+	if _, ex := excluded("--target", "main", "--full"); len(ex) != 0 {
+		t.Errorf("--full excluded %v", ex)
+	}
+	if strings.TrimSpace(gitCmd(t, repo, "status", "--porcelain")) != "" {
+		t.Error("the state was written into the working tree")
+	}
+}
+
+func TestFileStorePrunesOldStates(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "reuse-old.json")
+	os.WriteFile(old, []byte("{}"), 0o600)
+	past := time.Now().Add(-stateMaxAge - time.Hour)
+	os.Chtimes(old, past, past)
+	other := filepath.Join(dir, "unrelated")
+	os.WriteFile(other, nil, 0o600)
+	os.Chtimes(other, past, past)
+	cur := fileStore(filepath.Join(dir, "reuse-cur.json"))
+	if err := cur.Save([]byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("old state kept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("unrelated file removed")
+	}
+	if data, _ := cur.Load(); string(data) != `{"v":1}` {
+		t.Errorf("current state = %q", data)
 	}
 }
