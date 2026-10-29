@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,7 +43,14 @@ type Deps struct {
 	SaveResult func(raw []byte) error
 	// Redact masks secrets in text that gets posted to the MR.
 	Redact func(string) string
-	Log    io.Writer
+	// DiffKeys returns a key per changed file (see gitutil.Repo.DiffKeys).
+	// Without it every file is reviewed.
+	DiffKeys func(ctx context.Context, base, head string) (map[string]string, error)
+	// OCRVersion is part of the identity a reused review must match.
+	OCRVersion string
+	// ReuseStore keeps the reuse state of local runs. CI keeps it in the summary note.
+	ReuseStore ReuseStore
+	Log        io.Writer
 }
 
 type Options struct {
@@ -50,6 +58,8 @@ type Options struct {
 	// ExpectedHeadSHA is the commit the pipeline was started for. If the MR has
 	// moved on since, the run is skipped: a newer pipeline will review it.
 	ExpectedHeadSHA string
+	// Full reviews every file, ignoring what earlier reviews covered.
+	Full bool
 }
 
 type Stats struct {
@@ -60,6 +70,8 @@ type Stats struct {
 	Overflow   int
 	Failed     int
 	Resolved   int
+	// Reused counts the files not reviewed again because their diff is unchanged.
+	Reused int
 }
 
 type Outcome struct {
@@ -124,11 +136,27 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	idx := buildDiffIndex(diffs)
 
 	logf("reviewing !%d %s (%.8s..%.8s)", mr.IID, mr.Title, mr.BaseSHA, mr.HeadSHA)
-	ro, err := reviewOptions(ctx, cfg, mr, opts.RepoDir, d)
+	ro, rules, err := reviewOptions(ctx, cfg, mr, opts.RepoDir, d)
 	if err != nil {
 		return nil, err
 	}
-	res, err := runOCR(ctx, d, ro, cfg.OCR.Timeout)
+	// The state of the last review lives in the summary note, which only the bot writes.
+	var stored *ReuseState
+	if state.summary != nil && cfg.Review.ReuseUnchanged {
+		stored = stateFromNote(state.summary.Body)
+	}
+	var plan *reusePlan
+	if cfg.Review.ReuseUnchanged {
+		prev := stored
+		if opts.Full || slices.Contains(mr.Labels, FullReviewLabel) {
+			logf("full review requested (--full or the %s label): reviewing every file", FullReviewLabel)
+			prev = nil
+		}
+		plan = preparePlan(ctx, d, reuseIdentity(d.OCRVersion, cfg, ro, rules.json), prev, mr.BaseSHA, mr.HeadSHA, logf)
+	}
+	res, err := reviewOrReuse(ctx, d, &ro, rules, plan, cfg.OCR.Timeout, func(p *reusePlan) string {
+		return "the review of " + strings.Join(p.reusedHeads(), ", ")
+	}, logf)
 	if err != nil {
 		if cfg.Review.PostFailures {
 			msg := err.Error()
@@ -139,13 +167,18 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 			if d.Redact != nil {
 				msg = d.Redact(msg)
 			}
-			if perr := upsertSummary(ctx, d.GitLab, state, summaryBody(summaryData{HeadSHA: mr.HeadSHA, Failure: msg})); perr != nil {
+			// The files the stored state lists are still covered: keep it.
+			if perr := upsertSummary(ctx, d.GitLab, state, summaryBody(summaryData{HeadSHA: mr.HeadSHA, Failure: msg, State: stored})); perr != nil {
 				logf("warning: posting failure note: %v", perr)
 			}
 		}
 		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
-	logf("ocr finished with status %s: %d finding(s)", res.Status, len(res.Comments))
+	if plan.nothingLeft(res) {
+		logf("no file changed since the last review: nothing was sent to the model")
+	} else {
+		logf("ocr finished with status %s: %d finding(s)", res.Status, len(res.Comments))
+	}
 
 	findings := filterFindings(res.Comments, cfg.Review)
 	out := &Outcome{}
@@ -203,28 +236,43 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		}
 	}
 	st.Unplaced, st.Overflow, st.Failed = len(unplaced), len(overflow), len(failed)
+	// A reused file was not reviewed in this run, whatever OCR reports for it.
+	reviewed := func(path string) bool { return !plan.excluded(path) && res.Reviewed(path) }
 
 	if cfg.Review.ResolveOutdated {
 		if res.Complete() && st.Failed == 0 {
-			st.Resolved = resolveOutdated(ctx, d.GitLab, state, current, idx, res, mr.HeadSHA, logf)
+			st.Resolved = resolveOutdated(ctx, d.GitLab, state, current, idx, reviewed, mr.HeadSHA, logf)
 		} else {
 			logf("not resolving earlier threads: this review was incomplete")
 		}
 	}
 
+	out.GateReason = gateReason(findings, cfg.Review)
+	out.GateFailed = out.GateReason != ""
+
+	next := stored
+	if plan != nil {
+		next = plan.next(res, mr.HeadSHA)
+		st.Reused = len(plan.reused)
+	}
+	if next != nil && len(next.Files) == 0 {
+		next = nil
+	}
 	summary := summaryData{
 		Model: res.LLM.Model, HeadSHA: mr.HeadSHA, Stats: *st,
 		Unplaced: unplaced, Overflow: overflow, Failed: failed, MaxComments: cfg.Review.MaxComments,
-		Warnings: res.Warnings, Incomplete: !res.Complete(),
+		Warnings: res.Warnings, Incomplete: !res.Complete(), State: next,
 	}
-	if len(unplaced)+len(overflow)+len(failed)+len(res.Warnings) > 0 || !res.Complete() || state.summary != nil {
+	if plan != nil {
+		summary.ReusedFrom = plan.reusedHeads()
+		summary.NothingLeft = plan.nothingLeft(res)
+	}
+	if len(unplaced)+len(overflow)+len(failed)+len(res.Warnings) > 0 || !res.Complete() || state.summary != nil || next != nil {
 		if err := upsertSummary(ctx, d.GitLab, state, summaryBody(summary)); err != nil {
 			logf("warning: posting summary note: %v", err)
 		}
 	}
 
-	out.GateReason = gateReason(findings, cfg.Review)
-	out.GateFailed = out.GateReason != ""
 	if st.Failed > 0 {
 		return out, fmt.Errorf("%d comment(s) could not be posted", st.Failed)
 	}
@@ -255,6 +303,20 @@ func runOCR(ctx context.Context, d Deps, ro ocr.ReviewOptions, timeout time.Dura
 	return res, err
 }
 
+// reviewOrReuse runs OCR on the files plan does not reuse. They are excluded
+// from OCR's selection only: OCR can still read them for context. When nothing
+// is left, OCR selects no file and makes no LLM call.
+func reviewOrReuse(ctx context.Context, d Deps, ro *ocr.ReviewOptions, rules ruleSet, plan *reusePlan, timeout time.Duration,
+	since func(*reusePlan) string, logf func(string, ...any)) (*ocr.Result, error) {
+	if plan != nil && len(plan.reused) > 0 {
+		logf("%d file(s) unchanged since %s are not reviewed again", len(plan.reused), since(plan))
+		if err := rules.withExcludes(d, ro, plan.excludes()); err != nil {
+			return nil, err
+		}
+	}
+	return runOCR(ctx, d, *ro, timeout)
+}
+
 // gateReason explains why review.fail_on_severity trips for these findings, or "".
 func gateReason(findings []ocr.Comment, r config.Review) string {
 	if r.FailOnSeverity == "" {
@@ -270,7 +332,26 @@ func gateReason(findings []ocr.Comment, r config.Review) string {
 	return ""
 }
 
-func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDir string, d Deps) (ocr.ReviewOptions, error) {
+// ruleSet is the rule file reviewOptions wrote, so it can be written again
+// with more excludes.
+type ruleSet struct {
+	layers  []ocr.RuleFile
+	exclude []string
+	json    []byte
+}
+
+// withExcludes writes the rule file again with extra exclude patterns and
+// points ro at it.
+func (rs ruleSet) withExcludes(d Deps, ro *ocr.ReviewOptions, extra []string) error {
+	data, err := ocr.RuleJSON(rs.layers, append(slices.Clone(rs.exclude), extra...))
+	if err != nil {
+		return err
+	}
+	ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data)
+	return err
+}
+
+func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDir string, d Deps) (ocr.ReviewOptions, ruleSet, error) {
 	ro := ocr.ReviewOptions{
 		RepoDir: repoDir, From: mr.BaseSHA, To: mr.HeadSHA,
 		Provider: cfg.LLM.Provider, Model: cfg.LLM.Model,
@@ -310,11 +391,11 @@ func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDi
 		}
 		data, found, err := read(filepath.Base(p))
 		if err != nil {
-			return ro, fmt.Errorf("reading %s: %w", p, err)
+			return ro, ruleSet{}, fmt.Errorf("reading %s: %w", p, err)
 		}
 		if !found {
 			if p == cfg.OCR.RuleFile {
-				return ro, fmt.Errorf("ocr.rule_file %s not found (relative paths are read at the base commit %.8s)", p, mr.BaseSHA)
+				return ro, ruleSet{}, fmt.Errorf("ocr.rule_file %s not found (relative paths are read at the base commit %.8s)", p, mr.BaseSHA)
 			}
 			continue
 		}
@@ -326,17 +407,18 @@ func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDi
 			err = rf.InlineFiles(read)
 		}
 		if err != nil {
-			return ro, fmt.Errorf("%s: %w", p, err)
+			return ro, ruleSet{}, fmt.Errorf("%s: %w", p, err)
 		}
 		layers = append(layers, rf)
 	}
 	data, err := ocr.RuleJSON(layers, cfg.OCR.Exclude)
 	if err != nil {
-		return ro, err
+		return ro, ruleSet{}, err
 	}
 	if ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data); err != nil {
-		return ro, err
+		return ro, ruleSet{}, err
 	}
+	rules := ruleSet{layers: layers, exclude: cfg.OCR.Exclude, json: data}
 	if cfg.OCR.UseMRDescriptionAsBackground {
 		bg := "# " + mr.Title + "\n\n" + mr.Description
 		if runes := []rune(bg); len(runes) > 8000 {
@@ -344,11 +426,11 @@ func reviewOptions(ctx context.Context, cfg config.Config, mr *gitlab.MR, repoDi
 		}
 		p, err := d.OCR.WriteTemp("background.md", []byte(bg))
 		if err != nil {
-			return ro, err
+			return ro, ruleSet{}, err
 		}
 		ro.BackgroundFile = p
 	}
-	return ro, nil
+	return ro, rules, nil
 }
 
 // readFile is os.ReadFile with found=false for a missing file.
@@ -421,7 +503,7 @@ func autoResolvedBefore(replies []gitlab.Note, botID int64) bool {
 // again, in a file this review covered, and whose code changed since the comment
 // was made. Requiring the change keeps an LLM that merely missed the issue this
 // time from closing the thread.
-func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current map[string]bool, idx diffIndex, res *ocr.Result, headSHA string, logf func(string, ...any)) int {
+func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current map[string]bool, idx diffIndex, reviewed func(path string) bool, headSHA string, logf func(string, ...any)) int {
 	resolved := 0
 	compares := map[string]map[string][][2]int{}
 	for _, t := range s.open {
@@ -432,7 +514,7 @@ func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current ma
 		switch {
 		case idx[t.pos.NewPath] == nil:
 			changed = true // the file is no longer part of the MR
-		case !res.Reviewed(t.pos.NewPath):
+		case !reviewed(t.pos.NewPath):
 			continue // OCR did not look at the file this time
 		case t.pos.NewLine == 0:
 			// A comment on removed code that GitLab no longer traces to the current diff.

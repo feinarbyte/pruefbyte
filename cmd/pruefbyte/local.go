@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +26,7 @@ type localFlags struct {
 	target    string
 	committed bool
 	format    string
+	full      bool
 }
 
 func localCmd(g *globalFlags) *cobra.Command {
@@ -44,6 +48,10 @@ The API key comes from the env var named by llm.api_key_env
 (~/.opencodereview/config.json), else from the provider's env var such as
 ANTHROPIC_API_KEY. No GitLab token is needed.
 
+Files whose diff is unchanged since the last run on the same branch and
+target, and on which that run found nothing, are not reviewed again
+(review.reuse_unchanged); --full reviews every file.
+
 Exits 3 if a finding reaches review.fail_on_severity, as in CI.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runLocal(cmd.Context(), cmd.OutOrStdout(), g, f)
@@ -53,6 +61,7 @@ Exits 3 if a finding reaches review.fail_on_severity, as in CI.`,
 	cmd.Flags().StringVar(&f.target, "target", "", "branch the merge request goes into (default: origin's HEAD, e.g. origin/main)")
 	cmd.Flags().BoolVar(&f.committed, "committed", false, "review only committed changes, ignoring the working tree")
 	cmd.Flags().StringVar(&f.format, "format", "text", "output format: text or json")
+	cmd.Flags().BoolVar(&f.full, "full", false, "review every file, also those unchanged since the last run")
 	return cmd
 }
 
@@ -163,9 +172,19 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 			return runner.Configure(ctx, cfg.LLM, key, cfg.OCR.Language)
 		},
 		ReadFileAt: repo.ShowFile,
+		DiffKeys:   repo.DiffKeys,
+		OCRVersion: v,
+	}
+	// What earlier runs covered is kept per branch and target, in the git
+	// directory all worktrees share. A detached HEAD has no branch to keep it for.
+	if branch != "" {
+		if common, err := repo.CommonDir(ctx); err == nil {
+			h := sha256.Sum256([]byte(branch + "\x00" + target))
+			deps.ReuseStore = fileStore(filepath.Join(common, "pruefbyte", "reuse-"+hex.EncodeToString(h[:8])+".json"))
+		}
 	}
 	out, err := review.Local(ctx, deps, review.LocalTarget{
-		BaseSHA: mergeBase, HeadSHA: to, Title: branch, Description: log,
+		BaseSHA: mergeBase, HeadSHA: to, Title: branch, Description: log, Full: f.full,
 	}, repo.Dir)
 	if err != nil {
 		return err
@@ -179,7 +198,7 @@ func runLocal(ctx context.Context, stdout io.Writer, g *globalFlags, f *localFla
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(localJSON{
 			Status: out.Result.Status, Model: out.Result.LLM.Model, Base: mergeBase, Head: to,
-			Findings: out.Findings, Gate: out.GateReason,
+			Findings: out.Findings, Gate: out.GateReason, Reused: out.Reused,
 		}); err != nil {
 			return err
 		}
@@ -199,6 +218,30 @@ type localJSON struct {
 	Head     string        `json:"head"`
 	Findings []ocr.Comment `json:"findings"`
 	Gate     string        `json:"fail_on_severity_reached,omitempty"`
+	// Reused counts the files not reviewed again: unchanged since the last run.
+	Reused int `json:"reused_files"`
+}
+
+// fileStore keeps the reuse state of local runs in a file.
+type fileStore string
+
+func (f fileStore) Load() ([]byte, error) {
+	data, err := os.ReadFile(string(f))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
+}
+
+func (f fileStore) Save(data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(string(f)), 0o750); err != nil {
+		return err
+	}
+	tmp := string(f) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, string(f))
 }
 
 func branchOr(branch, head string) string {

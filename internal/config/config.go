@@ -78,6 +78,9 @@ type Review struct {
 	ResolveOutdated bool     `yaml:"resolve_outdated"`
 	FailOnSeverity  string   `yaml:"fail_on_severity"`
 	PostFailures    bool     `yaml:"post_failures"`
+	// ReuseUnchanged skips files whose diff is unchanged since the last
+	// review of the same merge request (or local branch and target).
+	ReuseUnchanged bool `yaml:"reuse_unchanged"`
 }
 
 // repoConfig lists the only keys a repository file may set. Anything that decides
@@ -122,6 +125,7 @@ func Default() Config {
 			Suggestions:     true,
 			ResolveOutdated: true,
 			PostFailures:    true,
+			ReuseUnchanged:  true,
 		},
 	}
 }

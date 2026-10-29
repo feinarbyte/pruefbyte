@@ -4,6 +4,8 @@ package gitutil
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -205,4 +207,58 @@ func (r Repo) Toplevel(ctx context.Context) (string, error) {
 func (r Repo) Branch(ctx context.Context) (string, error) {
 	out, err := r.run(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	return strings.TrimSpace(string(out)), err
+}
+
+// DiffKeys returns a key per file changed between base and head, by the path
+// on the head side (the old path for a deletion). The key covers both paths,
+// both blobs and both modes, so it changes whenever the file's content on
+// either side changes, including through a rebase. Renames are detected the
+// way OCR detects them (git's default --find-renames), so a key matches the
+// diff OCR reviews.
+func (r Repo) DiffKeys(ctx context.Context, base, head string) (map[string]string, error) {
+	out, err := r.run(ctx, "diff", "--raw", "-z", "--no-abbrev", "--find-renames", "--no-ext-diff", "--no-textconv",
+		"--end-of-options", base, head, "--")
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]string{}
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i < len(fields); i++ {
+		meta := fields[i]
+		if meta == "" {
+			continue
+		}
+		// ":<old mode> <new mode> <old blob> <new blob> <status>[score]", then one
+		// path, or two for renames and copies.
+		parts := strings.Fields(strings.TrimPrefix(meta, ":"))
+		if !strings.HasPrefix(meta, ":") || len(parts) != 5 || i+1 >= len(fields) {
+			return nil, fmt.Errorf("unexpected git diff --raw output %q", meta)
+		}
+		status := parts[4][:1]
+		oldPath, newPath := fields[i+1], fields[i+1]
+		i++
+		if status == "R" || status == "C" {
+			if i+1 >= len(fields) {
+				return nil, fmt.Errorf("unexpected git diff --raw output %q", meta)
+			}
+			newPath = fields[i+1]
+			i++
+		}
+		h := sha256.Sum256([]byte(strings.Join([]string{status, oldPath, newPath, parts[0], parts[1], parts[2], parts[3]}, "\x00")))
+		keys[newPath] = hex.EncodeToString(h[:16])
+	}
+	return keys, nil
+}
+
+// CommonDir returns the repository's git directory shared by all its worktrees.
+func (r Repo) CommonDir(ctx context.Context) (string, error) {
+	out, err := r.run(ctx, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.FromSlash(strings.TrimSpace(string(out)))
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(r.Dir, dir)
+	}
+	return dir, nil
 }

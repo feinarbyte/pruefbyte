@@ -20,6 +20,7 @@ type MR struct {
 	BaseSHA     string
 	StartSHA    string
 	HeadSHA     string
+	Labels      []string
 }
 
 type FileDiff struct {
@@ -125,6 +126,7 @@ func (c *Client) GetMR(ctx context.Context) (*MR, error) {
 		BaseSHA:     m.DiffRefs.BaseSha,
 		StartSHA:    m.DiffRefs.StartSha,
 		HeadSHA:     m.DiffRefs.HeadSha,
+		Labels:      m.Labels,
 	}
 	return mr, nil
 }

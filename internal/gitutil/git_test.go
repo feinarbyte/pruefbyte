@@ -123,3 +123,73 @@ func TestSnapshotAndMergeBase(t *testing.T) {
 		t.Errorf("Log = %q, %v", log, err)
 	}
 }
+
+func TestDiffKeysAndCommonDir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	write := func(name, content string) { os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644) }
+	write("a.go", "package a\n")
+	write("b.go", "package b\n\nfunc B() {}\n")
+	write("c.go", "package c\n")
+	write("same.go", "package same\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-qm", "base")
+	base := git(t, dir, "rev-parse", "HEAD")
+	write("a.go", "package a\n\nvar A = 1\n")
+	git(t, dir, "mv", "b.go", "d.go")
+	git(t, dir, "rm", "-q", "c.go")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-qm", "head")
+	head := git(t, dir, "rev-parse", "HEAD")
+
+	r := Repo{Dir: dir}
+	ctx := context.Background()
+	keys, err := r.DiffKeys(ctx, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 3 || keys["a.go"] == "" || keys["d.go"] == "" || keys["c.go"] == "" {
+		t.Fatalf("keys = %v, want a.go, the rename d.go and the deletion c.go", keys)
+	}
+	if again, _ := r.DiffKeys(ctx, base, head); again["a.go"] != keys["a.go"] {
+		t.Error("keys are not stable")
+	}
+	// A new base with another a.go (a rebase) changes a.go's key only.
+	git(t, dir, "checkout", "-q", base)
+	write("a.go", "package a // rebased\n")
+	git(t, dir, "commit", "-qam", "base2")
+	base2 := git(t, dir, "rev-parse", "HEAD")
+	keys2, err := r.DiffKeys(ctx, base2, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys2["a.go"] == keys["a.go"] || keys2["d.go"] != keys["d.go"] {
+		t.Errorf("after a base change: a.go %v -> %v, d.go %v -> %v", keys["a.go"], keys2["a.go"], keys["d.go"], keys2["d.go"])
+	}
+
+	common, err := r.CommonDir(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, dir, "worktree", "add", "-q", wt, head)
+	wtCommon, err := Repo{Dir: wt}.CommonDir(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := filepath.EvalSymlinks(common); a == "" || a != mustEval(t, wtCommon) {
+		t.Errorf("common dir %q, from a worktree %q", common, wtCommon)
+	}
+}
+
+func mustEval(t *testing.T, p string) string {
+	t.Helper()
+	out, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}

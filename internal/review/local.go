@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 type LocalTarget struct {
 	BaseSHA, HeadSHA   string
 	Title, Description string
+	// Full reviews every file, ignoring what earlier runs covered.
+	Full bool
 }
 
 type LocalOutcome struct {
@@ -26,6 +29,10 @@ type LocalOutcome struct {
 	// review.categories, most severe first.
 	Findings   []ocr.Comment
 	GateReason string
+	// Reused counts the files not reviewed again because their diff is
+	// unchanged since an earlier run; NothingLeft says no other file was.
+	Reused      int
+	NothingLeft bool
 }
 
 // Local reviews a target the way Run reviews a merge request, using the same
@@ -41,12 +48,25 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 			return nil, err
 		}
 	}
+	logf := func(format string, a ...any) { fmt.Fprintf(d.Log, "[pruefbyte] "+format+"\n", a...) }
 	mr := &gitlab.MR{BaseSHA: t.BaseSHA, StartSHA: t.BaseSHA, HeadSHA: t.HeadSHA, Title: t.Title, Description: t.Description}
-	ro, err := reviewOptions(ctx, cfg, mr, repoDir, d)
+	ro, rules, err := reviewOptions(ctx, cfg, mr, repoDir, d)
 	if err != nil {
 		return nil, err
 	}
-	res, err := runOCR(ctx, d, ro, cfg.OCR.Timeout)
+	var plan *reusePlan
+	if cfg.Review.ReuseUnchanged && d.ReuseStore != nil {
+		var prev *ReuseState
+		if !t.Full {
+			data, err := d.ReuseStore.Load()
+			if err != nil {
+				logf("warning: reviewing every file: reading the last run's state: %v", err)
+			}
+			prev = ParseReuseState(data)
+		}
+		plan = preparePlan(ctx, d, reuseIdentity(d.OCRVersion, cfg, ro, rules.json), prev, t.BaseSHA, t.HeadSHA, logf)
+	}
+	res, err := reviewOrReuse(ctx, d, &ro, rules, plan, cfg.OCR.Timeout, func(*reusePlan) string { return "the last run" }, logf)
 	if err != nil {
 		// ocr's output has already streamed to d.Log; repeating it would only add noise.
 		var re *ocr.RunError
@@ -64,7 +84,16 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 			findings = append(findings, c)
 		}
 	}
-	return &LocalOutcome{Result: res, Findings: findings, GateReason: gateReason(findings, cfg.Review)}, nil
+	out := &LocalOutcome{Result: res, Findings: findings, GateReason: gateReason(findings, cfg.Review)}
+	if plan != nil {
+		out.Reused, out.NothingLeft = len(plan.reused), plan.nothingLeft(res)
+		if data, err := json.Marshal(plan.next(res, t.HeadSHA)); err == nil {
+			if err := d.ReuseStore.Save(data); err != nil {
+				logf("warning: saving the state for the next run: %v", err)
+			}
+		}
+	}
+	return out, nil
 }
 
 // WriteLocal prints a local review's findings for a terminal.
@@ -87,6 +116,13 @@ func WriteLocal(w io.Writer, o *LocalOutcome) {
 		fmt.Fprintln(w)
 	}
 	hidden := len(o.Result.Comments) - len(o.Findings)
+	if o.Reused > 0 {
+		fmt.Fprintf(w, "%d file(s) unchanged since the last run were not reviewed again; --full reviews them too.\n", o.Reused)
+	}
+	if o.NothingLeft {
+		fmt.Fprintln(w, "Nothing else changed since the last run; nothing was sent to the model.")
+		return
+	}
 	if len(o.Findings) == 0 && hidden == 0 {
 		fmt.Fprintln(w, "No findings.")
 	} else {
