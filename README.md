@@ -144,7 +144,8 @@ pruefbyte only sends OCR the files that need it:
 - The settings must also be the same: OCR version, provider, model, effort, language,
   `ocr.extra_args`, and the rules and excludes from `.pruefbyte.yml`, `ocr.rule_file`
   and `.opencodereview/rule.json`. Changing any of them reviews every file. Editing the
-  merge request's description does not.
+  merge request's description does not. A file that `ocr.extra_args` names counts by its
+  path only: after editing it, run one full review.
 - A file OCR commented on, or warned about, is always reviewed again. Its findings, the
   `review.fail_on_severity` gate and the summary note only ever come from a review, and
   once you fix the finding the file's diff changes anyway.

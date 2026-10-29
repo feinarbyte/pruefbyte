@@ -183,7 +183,7 @@ func summaryBody(d summaryData) string {
 	}
 	from := "`" + strings.Join(d.ReusedFrom, "`, `") + "`"
 	if d.NothingLeft {
-		fmt.Fprintf(&b, "Checked `%s`: no file changed since the review of %s, so nothing was sent to the model. "+
+		fmt.Fprintf(&b, "Checked `%s`: every file to review is unchanged since the review of %s, so nothing was sent to the model. "+
 			"%d file(s) are covered by that review.\n", sha, from, d.Stats.Reused)
 	} else {
 		fmt.Fprintf(&b, "Reviewed `%s`", sha)
@@ -196,7 +196,7 @@ func summaryBody(d summaryData) string {
 		}
 	}
 	if d.Stats.Reused > 0 {
-		fmt.Fprintf(&b, "Add the `%s` label to review every file again.\n", FullReviewLabel)
+		fmt.Fprintf(&b, "\nAdd the `%s` label to review every file again.\n", FullReviewLabel)
 	}
 	if d.Incomplete {
 		b.WriteString("\n⚠️ The review did not complete for every file; see the job log.\n")

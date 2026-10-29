@@ -323,3 +323,54 @@ func TestNothingLeftNeedsOCRToSelectNothing(t *testing.T) {
 		t.Error("manifest selection not used")
 	}
 }
+
+func TestCommentUnderAnotherSpellingKeepsFileOut(t *testing.T) {
+	p := &reusePlan{identity: "id", keys: map[string]string{"new.go": "kn", "b.go": "kb"}, reused: map[string]ReusedFile{}}
+	res := covered(nil, ocr.Comment{Path: "old.go", Content: "x"}, ocr.Comment{Path: "./B.go", Content: "y"})
+	res.Manifest.Coverage.Completed = []ocr.CoveredItem{{Path: "new.go", OldPath: "old.go"}, {Path: "b.go"}}
+	if s := p.next(res, "h"); len(s.Files) != 0 {
+		t.Errorf("files with comments stored: %v", s.Files)
+	}
+}
+
+func TestFullReviewDropsStateWhenKeysFail(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka", "b.go": "kb"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	d.DiffKeys = func(context.Context, string, string) (map[string]string, error) { return nil, errors.New("shallow") }
+	if _, err := Run(ctx, d, Options{Full: true}); err != nil {
+		t.Fatal(err)
+	}
+	if s := storedState(t, f); s != nil {
+		t.Errorf("full review kept the old state: %+v", s.Files)
+	}
+}
+
+func TestExtraRuleArgChangesIdentity(t *testing.T) {
+	cfg := testConfig()
+	ro := ocr.ReviewOptions{Model: "m", RuleFile: "/tmp/a.json"}
+	base := reuseIdentity("v", cfg, ro, nil)
+	ro.RuleFile = "/tmp/other.json" // pruefbyte's own temp file: not part of it
+	if reuseIdentity("v", cfg, ro, nil) != base {
+		t.Error("the temp rule file path changed the identity")
+	}
+	ro.ExtraArgs = []string{"--rule", "/etc/ocr/extra.json"}
+	if reuseIdentity("v", cfg, ro, nil) == base {
+		t.Error("--rule in ocr.extra_args left the identity unchanged")
+	}
+}
+
+func TestLocalPrintsWarningsWhenNothingLeft(t *testing.T) {
+	var b strings.Builder
+	WriteLocal(&b, &LocalOutcome{Result: &ocr.Result{Status: "skipped", Warnings: []ocr.Warning{{Message: "rule problem"}}}, Reused: 2, NothingLeft: true})
+	for _, want := range []string{"2 file(s) unchanged", "nothing was sent to the model", "OCR warning: rule problem"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("output misses %q:\n%s", want, b.String())
+		}
+	}
+}

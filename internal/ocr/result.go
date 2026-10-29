@@ -27,7 +27,8 @@ type Manifest struct {
 }
 
 type CoveredItem struct {
-	Path string `json:"path"`
+	Path    string `json:"path"`
+	OldPath string `json:"old_path,omitempty"`
 }
 
 type LLMInfo struct {

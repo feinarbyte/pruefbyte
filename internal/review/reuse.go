@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -120,7 +121,10 @@ func reuseIdentity(ocrVersion string, cfg config.Config, ro ocr.ReviewOptions, r
 	}
 	// Run-specific values (paths, commits) and limits that only decide whether a
 	// file is completed, which the manifest reports, are not part of it.
-	args := ro.Args("")
+	// ocr.extra_args count in full; a file they name counts by its path only.
+	base := ro
+	base.ExtraArgs = nil
+	args := base.Args("")
 	skip := map[string]bool{"--repo": true, "--from": true, "--to": true, "--output": true, "--rule": true,
 		"--background-file": true, "--concurrency": true, "--max-tokens-budget": true}
 	for i := 0; i < len(args); i++ {
@@ -130,6 +134,8 @@ func reuseIdentity(ocrVersion string, cfg config.Config, ro ocr.ReviewOptions, r
 		}
 		fields = append(fields, args[i])
 	}
+	fields = append(fields, "extra_args")
+	fields = append(fields, ro.ExtraArgs...)
 	h := sha256.Sum256([]byte(strings.Join(fields, "\x00")))
 	return hex.EncodeToString(h[:])
 }
@@ -143,8 +149,10 @@ type reusePlan struct {
 }
 
 // excludable reports whether path can be passed to OCR as an exclude pattern
-// that matches it alone. OCR matches excludes as globs, expands braces without
-// honoring escapes, and compares case-insensitively.
+// that matches it alone. OCR matches rule-file excludes as doublestar globs
+// against the whole path (so "a.go" does not match "sub/a.go", and a leading
+// "!" or "#" is literal), expands braces without honoring escapes, and
+// compares case-insensitively.
 func excludable(path string) bool {
 	return path != "" && !strings.ContainsAny(path, `*?[]{}\`)
 }
@@ -205,15 +213,21 @@ func (p *reusePlan) next(res *ocr.Result, head string) *ReuseState {
 	if res == nil || res.Manifest == nil {
 		return s
 	}
+	// Compared loosely, so a comment that spells the path differently (case,
+	// "./", the old path of a rename) still keeps the file from being stored.
+	norm := func(s string) string { return strings.ToLower(path.Clean(strings.TrimPrefix(s, "./"))) }
 	flagged := map[string]bool{}
 	for _, c := range res.Comments {
-		flagged[c.Path] = true
+		flagged[norm(c.Path)] = true
 	}
 	for _, w := range res.Warnings {
-		flagged[w.File] = true
+		flagged[norm(w.File)] = true
 	}
 	for _, it := range res.Manifest.Coverage.Completed {
-		if k := p.keys[it.Path]; k != "" && !flagged[it.Path] && excludable(it.Path) && !p.excluded(it.Path) {
+		if flagged[norm(it.Path)] || it.OldPath != "" && flagged[norm(it.OldPath)] {
+			continue
+		}
+		if k := p.keys[it.Path]; k != "" && excludable(it.Path) && !p.excluded(it.Path) {
 			s.Files[it.Path] = ReusedFile{Key: k, At: head}
 		}
 	}
@@ -230,6 +244,14 @@ func (p *reusePlan) nothingLeft(res *ocr.Result) bool {
 		return res.Status == "skipped"
 	}
 	return res.Complete() && len(res.Manifest.Coverage.Selected) == 0
+}
+
+// since names what the reused files were covered by, for the log.
+func (p *reusePlan) since(local bool) string {
+	if local {
+		return "the last run"
+	}
+	return "the review of " + strings.Join(p.reusedHeads(), ", ")
 }
 
 // reusedHeads lists the commits the reused files were reviewed at, shortened.

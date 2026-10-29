@@ -48,7 +48,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 			return nil, err
 		}
 	}
-	logf := func(format string, a ...any) { fmt.Fprintf(d.Log, "[pruefbyte] "+format+"\n", a...) }
+	logf := logger(d.Log)
 	mr := &gitlab.MR{BaseSHA: t.BaseSHA, StartSHA: t.BaseSHA, HeadSHA: t.HeadSHA, Title: t.Title, Description: t.Description}
 	ro, rules, err := reviewOptions(ctx, cfg, mr, repoDir, d)
 	if err != nil {
@@ -66,7 +66,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 		}
 		plan = preparePlan(ctx, d, cfg, ro, rules, stored, t.Full, t.BaseSHA, t.HeadSHA, logf)
 	}
-	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, func(*reusePlan) string { return "the last run" }, logf)
+	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, true, logf)
 	if err != nil {
 		// ocr's output has already streamed to d.Log; repeating it would only add noise.
 		var re *ocr.RunError
@@ -119,13 +119,12 @@ func WriteLocal(w io.Writer, o *LocalOutcome) {
 	if o.Reused > 0 {
 		fmt.Fprintf(w, "%d file(s) unchanged since the last run were not reviewed again; --full reviews them too.\n", o.Reused)
 	}
-	if o.NothingLeft {
-		fmt.Fprintln(w, "Nothing else changed since the last run; nothing was sent to the model.")
-		return
-	}
-	if len(o.Findings) == 0 && hidden == 0 {
+	switch {
+	case o.NothingLeft:
+		fmt.Fprintln(w, "No other file needs a review; nothing was sent to the model.")
+	case len(o.Findings) == 0 && hidden == 0:
 		fmt.Fprintln(w, "No findings.")
-	} else {
+	default:
 		fmt.Fprintf(w, "%d finding(s)", len(o.Findings))
 		if hidden > 0 {
 			fmt.Fprintf(w, ", %d more below review.min_severity, outside review.categories, empty or repeated", hidden)

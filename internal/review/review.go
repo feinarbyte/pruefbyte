@@ -84,8 +84,13 @@ type Outcome struct {
 
 var ErrReviewFailed = errors.New("review failed")
 
+// logger returns a printf for pruefbyte's log lines.
+func logger(w io.Writer) func(string, ...any) {
+	return func(format string, a ...any) { fmt.Fprintf(w, "[pruefbyte] "+format+"\n", a...) }
+}
+
 func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
-	logf := func(format string, a ...any) { fmt.Fprintf(d.Log, "[pruefbyte] "+format+"\n", a...) }
+	logf := logger(d.Log)
 	skip := func(mr *gitlab.MR, reason string) (*Outcome, error) {
 		logf("skipping !%d: %s", mr.IID, reason)
 		return &Outcome{Skipped: reason}, nil
@@ -147,9 +152,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	}
 	full := opts.Full || slices.Contains(mr.Labels, FullReviewLabel)
 	plan := preparePlan(ctx, d, cfg, ro, rules, stored, full, mr.BaseSHA, mr.HeadSHA, logf)
-	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, func(p *reusePlan) string {
-		return "the review of " + strings.Join(p.reusedHeads(), ", ")
-	}, logf)
+	res, err := reviewOrReuse(ctx, d, ro, rules, plan, cfg.OCR.Timeout, false, logf)
 	if err != nil {
 		if cfg.Review.PostFailures {
 			msg := err.Error()
@@ -168,7 +171,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
 	if plan.nothingLeft(res) {
-		logf("no file changed since the last review: nothing was sent to the model")
+		logf("every file to review is unchanged since an earlier review: nothing was sent to the model")
 	} else {
 		logf("ocr finished with status %s: %d finding(s)", res.Status, len(res.Comments))
 	}
@@ -244,6 +247,9 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	out.GateFailed = out.GateReason != ""
 
 	next := stored
+	if full {
+		next = nil // a full review replaces what is kept, even when it cannot store anything new
+	}
 	if plan != nil {
 		next = plan.next(res, mr.HeadSHA)
 		st.Reused = len(plan.reused)
@@ -300,10 +306,10 @@ func runOCR(ctx context.Context, d Deps, ro ocr.ReviewOptions, timeout time.Dura
 // reuse. Those are excluded from OCR's selection only: OCR can still read them
 // for context. When nothing is left, OCR selects no file and makes no LLM call.
 func reviewOrReuse(ctx context.Context, d Deps, ro ocr.ReviewOptions, rules ruleSet, plan *reusePlan, timeout time.Duration,
-	since func(*reusePlan) string, logf func(string, ...any)) (*ocr.Result, error) {
+	local bool, logf func(string, ...any)) (*ocr.Result, error) {
 	exclude := rules.exclude
 	if plan != nil && len(plan.reused) > 0 {
-		logf("%d file(s) unchanged since %s are not reviewed again", len(plan.reused), since(plan))
+		logf("%d file(s) unchanged since %s are not reviewed again", len(plan.reused), plan.since(local))
 		exclude = append(slices.Clone(exclude), plan.excludes()...)
 	}
 	data, err := ocr.RuleJSON(rules.layers, exclude)
@@ -536,7 +542,7 @@ func resolveOutdated(ctx context.Context, api gitlab.API, s botState, current ma
 
 func upsertSummary(ctx context.Context, api gitlab.API, s botState, body string) error {
 	if s.summary != nil {
-		if s.summary.Body == body {
+		if strings.TrimSpace(s.summary.Body) == strings.TrimSpace(body) {
 			return nil
 		}
 		return api.UpdateNote(ctx, s.summary.ID, body)
