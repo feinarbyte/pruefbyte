@@ -122,11 +122,14 @@ func (f *fakeGitLab) summary() string {
 }
 
 type fakeOCR struct {
-	res   *ocr.Result
-	err   error
-	opts  ocr.ReviewOptions
-	calls int
-	temps map[string][]byte
+	res        *ocr.Result
+	err        error
+	opts       ocr.ReviewOptions
+	calls      int
+	temps      map[string][]byte
+	preview    []ocr.PreviewEntry
+	previewErr error
+	previews   int
 	// during runs inside Review, e.g. to simulate a push while OCR works.
 	during func()
 }
@@ -138,6 +141,12 @@ func (f *fakeOCR) Review(_ context.Context, o ocr.ReviewOptions) (*ocr.Result, [
 		f.during()
 	}
 	return f.res, []byte("{}"), f.err
+}
+
+// Preview answers with preview, or fails with previewErr; previews counts calls.
+func (f *fakeOCR) Preview(context.Context, ocr.ReviewOptions) ([]ocr.PreviewEntry, error) {
+	f.previews++
+	return f.preview, f.previewErr
 }
 
 func (f *fakeOCR) WriteTemp(name string, data []byte) (string, error) {

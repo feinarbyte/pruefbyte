@@ -320,6 +320,28 @@ func (r *Runner) Review(ctx context.Context, o ReviewOptions) (*Result, []byte, 
 	return res, raw, nil
 }
 
+// Preview runs the review o describes with --preview: OCR lists the changed
+// files and why it leaves some out, without calling the LLM.
+func (r *Runner) Preview(ctx context.Context, o ReviewOptions) ([]PreviewEntry, error) {
+	outFile := filepath.Join(r.Home, "preview.json")
+	_ = os.Remove(outFile)
+	cmd, err := r.command(ctx, append(o.Args(outFile), "--preview")...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = o.RepoDir
+	var stderr tailBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ocr review --preview: %w: %s", err, stderr.String())
+	}
+	raw, err := os.ReadFile(outFile)
+	if err != nil {
+		return nil, fmt.Errorf("ocr review --preview wrote no result: %w", err)
+	}
+	return ParsePreview(raw)
+}
+
 // WriteTemp writes data to a file in the runner's home and returns its path.
 func (r *Runner) WriteTemp(name string, data []byte) (string, error) {
 	p := filepath.Join(r.Home, name)
