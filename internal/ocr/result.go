@@ -105,3 +105,26 @@ func (r *Result) Reviewed(path string) bool {
 	}
 	return false
 }
+
+// PreviewEntry is one changed file of `ocr review --preview --format json`.
+type PreviewEntry struct {
+	Path       string `json:"path"`
+	WillReview bool   `json:"will_review"`
+	// ExcludeReason says why OCR leaves the file out, e.g. user_exclude,
+	// default_path, unsupported_ext, deleted, binary, too_large.
+	ExcludeReason string `json:"exclude_reason,omitempty"`
+}
+
+// ParsePreview reads the document `ocr review --preview --format json` writes.
+func ParsePreview(data []byte) ([]PreviewEntry, error) {
+	var p struct {
+		Files *[]PreviewEntry `json:"files"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, fmt.Errorf("parsing ocr preview: %w", err)
+	}
+	if p.Files == nil {
+		return nil, fmt.Errorf("ocr preview has no files field")
+	}
+	return *p.Files, nil
+}

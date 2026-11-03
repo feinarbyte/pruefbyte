@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/feinarbyte/pruefbyte/internal/config"
 	"github.com/feinarbyte/pruefbyte/internal/ocr"
@@ -162,6 +163,9 @@ type reusePlan struct {
 	keys     map[string]string // DiffKeys of this review's diff
 	// reused are the files OCR is not given this time, with the review that covered them.
 	reused map[string]ReusedFile
+	// reasons holds OCR's exclude_reason per path, from a preview run when
+	// nothing was left to review; nil when there was none.
+	reasons map[string]string
 }
 
 // excludable reports whether path can be passed to OCR as an exclude pattern
@@ -280,7 +284,166 @@ func (p *reusePlan) since(local bool) string {
 	if local {
 		return "the last run"
 	}
-	return "the review of " + strings.Join(p.reusedHeads(), ", ")
+	return reviewsOf(p.reusedHeads(), "")
+}
+
+// reviewsOf names the reviews at heads: "the review of a" for one, "earlier
+// reviews (of a, b)" for several, which otherwise reads as one review of all.
+// quote wraps each head, e.g. in backticks for Markdown.
+func reviewsOf(heads []string, quote string) string {
+	q := make([]string, len(heads))
+	for i, h := range heads {
+		q[i] = quote + h + quote
+	}
+	if len(q) == 1 {
+		return "the review of " + q[0]
+	}
+	return "earlier reviews (of " + strings.Join(q, ", ") + ")"
+}
+
+// others lists, sorted, the changed files that are not reused. When
+// nothingLeft, OCR selected none of them, by its built-in rules or the rule
+// file's excludes. A review run does not say which (--audience agent), so
+// pruefbyte names them, with OCR's reason when a preview gave one.
+func (p *reusePlan) others() []LeftOut {
+	var out []LeftOut
+	for path := range p.keys {
+		if !p.excluded(path) {
+			out = append(out, LeftOut{Path: path, Reason: p.reasons[path]})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// LeftOut is a changed file OCR did not select, with OCR's exclude_reason
+// ("" when unknown).
+type LeftOut struct {
+	Path, Reason string
+}
+
+// reasonGroup is the files OCR left out for one reason.
+type reasonGroup struct {
+	reason string
+	paths  []string
+}
+
+// reasonOrder lists OCR's exclude reasons, those a repository can act on first.
+var reasonOrder = []string{"user_exclude", "default_path", "unsupported_ext", "too_large", "binary", "deleted",
+	"secret_exclude", "provider_directory"}
+
+// groupByReason groups files by reason, in reasonOrder, then any reason this
+// OCR version has that pruefbyte does not know, then files without one.
+func groupByReason(files []LeftOut) []reasonGroup {
+	by := map[string][]string{}
+	for _, f := range files {
+		by[f.Reason] = append(by[f.Reason], f.Path)
+	}
+	var keys []string
+	for _, r := range reasonOrder {
+		if by[r] != nil {
+			keys = append(keys, r)
+		}
+	}
+	var unknown []string
+	for r := range by {
+		if r != "" && !slices.Contains(reasonOrder, r) {
+			unknown = append(unknown, r)
+		}
+	}
+	sort.Strings(unknown)
+	keys = append(keys, unknown...)
+	if by[""] != nil {
+		keys = append(keys, "")
+	}
+	out := make([]reasonGroup, 0, len(keys))
+	for _, r := range keys {
+		out = append(out, reasonGroup{reason: r, paths: by[r]})
+	}
+	return out
+}
+
+// reasonLabel describes an OCR exclude reason in Markdown.
+func reasonLabel(reason string) string {
+	switch reason {
+	case "user_exclude":
+		return "Excluded by `ocr.exclude` or the rule file"
+	case "default_path":
+		return "On OCR's built-in list of paths it skips (an `include` pattern in the rule file reviews them)"
+	case "unsupported_ext":
+		return "File type OCR does not review"
+	case "too_large":
+		return "Too large for OCR's token limit"
+	case "binary":
+		return "Binary"
+	case "deleted":
+		return "Deleted"
+	case "secret_exclude":
+		return "Secret file, which OCR never reviews"
+	case "provider_directory":
+		return "In a directory OCR never reviews"
+	case "":
+		return "Reason unknown"
+	}
+	return "OCR: `" + reason + "`"
+}
+
+// previewTimeout bounds the preview that names OCR's reasons.
+const previewTimeout = 2 * time.Minute
+
+// previewReasons asks OCR, without calling the LLM, why it left out the
+// changed files nothing reviewed. It only runs when nothing was left.
+func (p *reusePlan) previewReasons(ctx context.Context, d Deps, ro ocr.ReviewOptions, res *ocr.Result, logf func(string, ...any)) {
+	if !p.nothingLeft(res) || len(p.others()) == 0 {
+		return
+	}
+	pv, ok := d.OCR.(Previewer)
+	if !ok {
+		return
+	}
+	// A preview takes about a second; a hung one must not hold up the job.
+	pctx, cancel := context.WithTimeout(ctx, previewTimeout)
+	defer cancel()
+	entries, err := pv.Preview(pctx, ro)
+	if err != nil {
+		logf("warning: asking OCR why it leaves files out: %v", err)
+		return
+	}
+	p.reasons = map[string]string{}
+	for _, e := range entries {
+		if !e.WillReview {
+			p.reasons[e.Path] = e.ExcludeReason
+		}
+	}
+}
+
+// listLeftOut renders left-out files for a terminal or log, grouped by reason.
+func listLeftOut(files []LeftOut, prefix string) string {
+	groups := groupByReason(files)
+	if len(groups) == 1 && groups[0].reason == "" { // no reason is known
+		return listPaths(groups[0].paths, prefix)
+	}
+	var b strings.Builder
+	for _, g := range groups {
+		fmt.Fprintf(&b, "%s%s:\n%s", prefix, strings.ReplaceAll(reasonLabel(g.reason), "`", ""), listPaths(g.paths, prefix+"  "))
+	}
+	return b.String()
+}
+
+// maxListed bounds the files a note or log line names.
+const maxListed = 50
+
+// listPaths renders paths one per line with prefix, at most maxListed.
+func listPaths(paths []string, prefix string) string {
+	var b strings.Builder
+	for i, p := range paths {
+		if i == maxListed {
+			fmt.Fprintf(&b, "%s… and %d more\n", prefix, len(paths)-maxListed)
+			break
+		}
+		b.WriteString(prefix + p + "\n")
+	}
+	return b.String()
 }
 
 // reusedHeads lists the commits the reused files were reviewed at, shortened.

@@ -551,3 +551,155 @@ func TestFailedLocalFullRunClearsStateWithoutPlan(t *testing.T) {
 		t.Error("failed --full run without a plan kept the state")
 	}
 }
+
+// Like MR 451: the reused files come from two reviews, and the only other
+// changed file is one OCR leaves out (a test file). The note must not suggest
+// that nothing changed, and must name that file.
+func TestNothingLeftNamesFilesOCRLeavesOut(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka", "b.go": "kb1"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.mr.HeadSHA, keys["b.go"] = "head2", "kb2"
+	o.res = covered([]string{"b.go"})
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// head3 only changes a test file, which OCR does not select.
+	f.mr.HeadSHA, keys["x.test.ts"] = "head3", "kx"
+	o.res = covered(nil)
+	o.res.Status = "skipped"
+	var log strings.Builder
+	d.Log = &log
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	note := f.summary()
+	for _, want := range []string{
+		"Checked `head3`: nothing was sent to the model. 2 file(s) are unchanged since earlier reviews (of `head1`, `head2`)",
+		"OCR does not review the other 1 changed file(s)",
+		"<summary>Changed files OCR does not review (1)</summary>",
+		"- `x.test.ts`",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note misses %q:\n%s", want, note)
+		}
+	}
+	if strings.Contains(note, "every file to review is unchanged") {
+		t.Errorf("note still claims nothing changed:\n%s", note)
+	}
+	if !strings.Contains(log.String(), "  x.test.ts\n") {
+		t.Errorf("job log does not name the file:\n%s", log.String())
+	}
+}
+
+func TestListPathsIsBounded(t *testing.T) {
+	var paths []string
+	for i := 0; i < maxListed+7; i++ {
+		paths = append(paths, fmt.Sprintf("f%03d.go", i))
+	}
+	got := listPaths(paths, "- ")
+	if strings.Count(got, "\n") != maxListed+1 || !strings.Contains(got, "… and 7 more") {
+		t.Errorf("listPaths:\n%s", got)
+	}
+	if q := quotePaths([]string{"a`b.go"}); q[0] != "``a`b.go``" {
+		t.Errorf("quotePaths = %q", q[0])
+	}
+}
+
+func TestLocalNamesFilesOCRLeavesOut(t *testing.T) {
+	var b strings.Builder
+	WriteLocal(&b, &LocalOutcome{Result: &ocr.Result{Status: "skipped"}, Reused: 3, NothingLeft: true,
+		Others: []LeftOut{{Path: "x.test.ts", Reason: "default_path"}, {Path: "go.sum", Reason: "user_exclude"}}})
+	want := "OCR does not review the other 2 changed file(s):\n" +
+		"  Excluded by ocr.exclude or the rule file:\n    go.sum\n" +
+		"  On OCR's built-in list of paths it skips (an include pattern in the rule file reviews them):\n    x.test.ts\n"
+	if !strings.Contains(b.String(), want) {
+		t.Errorf("local output:\n%s", b.String())
+	}
+}
+
+// With nothing left, OCR's preview gives the reason for each left-out file,
+// and the note groups them in its collapsed section.
+func TestNothingLeftGroupsFilesByOCRReason(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka", "b.go": "kb"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if o.previews != 0 {
+		t.Errorf("preview ran for a normal review")
+	}
+	f.mr.HeadSHA = "head2"
+	for p, k := range map[string]string{"x.test.ts": "k1", "y.test.ts": "k2", "README.md": "k3", "gen.lock": "k4", "odd.go": "k5"} {
+		keys[p] = k
+	}
+	o.res = covered(nil)
+	o.res.Status = "skipped"
+	o.preview = []ocr.PreviewEntry{
+		{Path: "a.go", ExcludeReason: "user_exclude"}, // reused: excluded by pruefbyte, not listed
+		{Path: "x.test.ts", ExcludeReason: "default_path"}, {Path: "y.test.ts", ExcludeReason: "default_path"},
+		{Path: "README.md", ExcludeReason: "unsupported_ext"}, {Path: "gen.lock", ExcludeReason: "user_exclude"},
+		{Path: "odd.go", ExcludeReason: "quarantined"},
+	}
+	var log strings.Builder
+	d.Log = &log
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if o.previews != 1 {
+		t.Errorf("previews = %d, want 1", o.previews)
+	}
+	note := f.summary()
+	section := note[strings.Index(note, "<details>"):]
+	want := []string{
+		"<summary>Changed files OCR does not review (5)</summary>",
+		"**Excluded by `ocr.exclude` or the rule file** (1)\n\n- `gen.lock`\n",
+		"**On OCR's built-in list of paths it skips (an `include` pattern in the rule file reviews them)** (2)\n\n- `x.test.ts`\n- `y.test.ts`\n",
+		"**File type OCR does not review** (1)\n\n- `README.md`\n",
+		"**OCR: `quarantined`** (1)\n\n- `odd.go`\n",
+	}
+	last := -1
+	for _, w := range want {
+		i := strings.Index(section, w)
+		if i < 0 || i < last {
+			t.Errorf("section misses %q, or it is out of order:\n%s", w, section)
+		}
+		last = i
+	}
+	if strings.Contains(section, "`a.go`") || strings.Contains(note, "for example") {
+		t.Errorf("reused file listed, or a guessed reason given:\n%s", note)
+	}
+	if !strings.Contains(log.String(), "  File type OCR does not review:\n    README.md\n") {
+		t.Errorf("job log:\n%s", log.String())
+	}
+}
+
+func TestNothingLeftWithoutReasonsListsPlainly(t *testing.T) {
+	f := newFake()
+	keys := map[string]string{"a.go": "ka", "b.go": "kb"}
+	o := &fakeOCR{res: covered([]string{"a.go", "b.go"})}
+	d := reuseDeps(f, o, keys)
+	ctx := context.Background()
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	f.mr.HeadSHA, keys["x.test.ts"] = "head2", "kx"
+	o.res = covered(nil)
+	o.res.Status = "skipped"
+	o.previewErr = errors.New("preview failed")
+	if _, err := Run(ctx, d, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	note := f.summary()
+	if !strings.Contains(note, "</summary>\n\n- `x.test.ts`\n") || strings.Contains(note, "Reason unknown") {
+		t.Errorf("fallback list:\n%s", note)
+	}
+}

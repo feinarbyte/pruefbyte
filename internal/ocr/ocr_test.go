@@ -275,3 +275,14 @@ func TestRunKeyCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePreview(t *testing.T) {
+	es, err := ParsePreview([]byte(`{"files": [{"path": "a.go", "status": "modified", "will_review": true},
+		{"path": "a_test.go", "will_review": false, "exclude_reason": "default_path"}], "total_files": 2}`))
+	if err != nil || len(es) != 2 || es[1].ExcludeReason != "default_path" || !es[0].WillReview {
+		t.Fatalf("ParsePreview = %+v, %v", es, err)
+	}
+	if _, err := ParsePreview([]byte(`{"status": "success"}`)); err == nil {
+		t.Error("a review result was taken for a preview")
+	}
+}

@@ -165,6 +165,8 @@ type summaryData struct {
 	ReusedFrom []string
 	// NothingLeft: every file was reused, OCR reviewed none.
 	NothingLeft bool
+	// Others lists, with NothingLeft, the changed files OCR left out.
+	Others []LeftOut
 	// State is stored in the note for the next review; nil stores none.
 	State *ReuseState
 }
@@ -181,10 +183,24 @@ func summaryBody(d summaryData) string {
 		fmt.Fprintf(&b, "⚠️ The review of `%s` failed.\n\n<details><summary>Error</summary>\n\n%s\n%s\n%s\n\n</details>\n", sha, f, d.Failure, f)
 		return b.String() + stateSuffix(d.State)
 	}
-	from := "`" + strings.Join(d.ReusedFrom, "`, `") + "`"
+	from := reviewsOf(d.ReusedFrom, "`")
 	if d.NothingLeft {
-		fmt.Fprintf(&b, "Checked `%s`: every file to review is unchanged since the review of %s, so nothing was sent to the model. "+
-			"%d file(s) are covered by that review.\n", sha, from, d.Stats.Reused)
+		fmt.Fprintf(&b, "Checked `%s`: nothing was sent to the model. %d file(s) are unchanged since %s, which cover them.",
+			sha, d.Stats.Reused, from)
+		if n := len(d.Others); n > 0 {
+			fmt.Fprintf(&b, " OCR does not review the other %d changed file(s), by its built-in rules or the rule file's excludes.\n", n)
+			fmt.Fprintf(&b, "\n<details><summary>Changed files OCR does not review (%d)</summary>\n\n", n)
+			groups := groupByReason(d.Others)
+			for _, g := range groups {
+				if g.reason != "" || len(groups) > 1 { // no heading when no reason is known
+					fmt.Fprintf(&b, "**%s** (%d)\n\n", reasonLabel(g.reason), len(g.paths))
+				}
+				fmt.Fprintf(&b, "%s\n", listPaths(quotePaths(g.paths), "- "))
+			}
+			b.WriteString("</details>\n")
+		} else {
+			b.WriteString("\n")
+		}
 	} else {
 		fmt.Fprintf(&b, "Reviewed `%s`", sha)
 		if d.Model != "" {
@@ -192,11 +208,11 @@ func summaryBody(d summaryData) string {
 		}
 		fmt.Fprintf(&b, ": %d new inline comment(s), %d already posted earlier.\n", d.Stats.Posted, d.Stats.Duplicates)
 		if d.Stats.Reused > 0 {
-			fmt.Fprintf(&b, "\n%d file(s) unchanged since the review of %s were not reviewed again.\n", d.Stats.Reused, from)
+			fmt.Fprintf(&b, "\n%d file(s) unchanged since %s were not reviewed again.\n", d.Stats.Reused, from)
 		}
 	}
 	if d.Stats.Reused > 0 {
-		fmt.Fprintf(&b, "\nAdd the `%s` label to review every file again.\n", FullReviewLabel)
+		fmt.Fprintf(&b, "\nAdd the `%s` label to review the unchanged files again.\n", FullReviewLabel)
 	}
 	if d.Incomplete {
 		b.WriteString("\n⚠️ The review did not complete for every file; see the job log.\n")
@@ -236,6 +252,24 @@ func summaryBody(d summaryData) string {
 		b.WriteString("\nAll findings are posted inline.\n")
 	}
 	return b.String() + stateSuffix(d.State)
+}
+
+// quotePaths wraps each path in a code span. Paths come from the repository,
+// so one with a backtick gets a longer fence.
+func quotePaths(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		f := "`"
+		for strings.Contains(p, f) {
+			f += "`"
+		}
+		pad := ""
+		if strings.HasPrefix(p, "`") || strings.HasSuffix(p, "`") {
+			pad = " "
+		}
+		out[i] = f + pad + p + pad + f
+	}
+	return out
 }
 
 // stateSuffix appends the hidden reuse state to a summary note.

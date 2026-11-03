@@ -181,7 +181,10 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 		return nil, fmt.Errorf("%w: %w", ErrReviewFailed, err)
 	}
 	if plan.nothingLeft(res) {
-		logf("every file to review is unchanged since an earlier review: nothing was sent to the model")
+		others := plan.others()
+		logf("nothing was sent to the model: %d file(s) are reused, and OCR does not review the other %d changed file(s)",
+			len(plan.reused), len(others))
+		fmt.Fprint(d.Log, listLeftOut(others, "  "))
 	} else {
 		logf("ocr finished with status %s: %d finding(s)", res.Status, len(res.Comments))
 	}
@@ -281,6 +284,7 @@ func Run(ctx context.Context, d Deps, opts Options) (*Outcome, error) {
 	if plan != nil {
 		summary.ReusedFrom = plan.reusedHeads()
 		summary.NothingLeft = plan.nothingLeft(res)
+		summary.Others = plan.others()
 	}
 	if len(unplaced)+len(overflow)+len(failed)+len(res.Warnings) > 0 || !res.Complete() || state.summary != nil || next != nil {
 		if err := upsertSummary(ctx, d.GitLab, state, summaryBody(summary)); err != nil {
@@ -335,7 +339,17 @@ func reviewOrReuse(ctx context.Context, d Deps, ro ocr.ReviewOptions, rules rule
 	if ro.RuleFile, err = d.OCR.WriteTemp("rule.json", data); err != nil {
 		return nil, err
 	}
-	return runOCR(ctx, d, ro, timeout)
+	res, err := runOCR(ctx, d, ro, timeout)
+	if err == nil && plan != nil {
+		plan.previewReasons(ctx, d, ro, res, logf)
+	}
+	return res, err
+}
+
+// Previewer lists the files a review would select, and why it leaves the
+// others out, without calling the LLM. *ocr.Runner implements it.
+type Previewer interface {
+	Preview(ctx context.Context, o ocr.ReviewOptions) ([]ocr.PreviewEntry, error)
 }
 
 // gateReason explains why review.fail_on_severity trips for these findings, or "".

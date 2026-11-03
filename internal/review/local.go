@@ -33,6 +33,8 @@ type LocalOutcome struct {
 	// unchanged since an earlier run; NothingLeft says no other file was.
 	Reused      int
 	NothingLeft bool
+	// Others lists, with NothingLeft, the changed files OCR left out.
+	Others []LeftOut
 }
 
 // Local reviews a target the way Run reviews a merge request, using the same
@@ -88,7 +90,7 @@ func Local(ctx context.Context, d Deps, t LocalTarget, repoDir string) (*LocalOu
 	}
 	out := &LocalOutcome{Result: res, Findings: findings, GateReason: gateReason(findings, cfg.Review)}
 	if plan != nil {
-		out.Reused, out.NothingLeft = len(plan.reused), plan.nothingLeft(res)
+		out.Reused, out.NothingLeft, out.Others = len(plan.reused), plan.nothingLeft(res), plan.others()
 		if data, err := json.Marshal(plan.next(res, t.HeadSHA, nil)); err == nil {
 			if err := d.ReuseStore.Save(data); err != nil {
 				logf("warning: saving the state for the next run: %v", err)
@@ -122,8 +124,11 @@ func WriteLocal(w io.Writer, o *LocalOutcome) {
 		fmt.Fprintf(w, "%d file(s) unchanged since the last run were not reviewed again; --full reviews them too.\n", o.Reused)
 	}
 	switch {
+	case o.NothingLeft && len(o.Others) > 0:
+		fmt.Fprintf(w, "Nothing was sent to the model: OCR does not review the other %d changed file(s):\n%s",
+			len(o.Others), plain(listLeftOut(o.Others, "  ")))
 	case o.NothingLeft:
-		fmt.Fprintln(w, "No other file needs a review; nothing was sent to the model.")
+		fmt.Fprintln(w, "No other file changed; nothing was sent to the model.")
 	case len(o.Findings) == 0 && hidden == 0:
 		fmt.Fprintln(w, "No findings.")
 	default:
