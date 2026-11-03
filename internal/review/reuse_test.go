@@ -552,7 +552,7 @@ func TestFailedLocalFullRunClearsStateWithoutPlan(t *testing.T) {
 	}
 }
 
-// Like MR 451: the reused files come from two reviews, and the only other
+// The reused files come from two reviews, and the only other
 // changed file is one OCR leaves out (a test file). The note must not suggest
 // that nothing changed, and must name that file.
 func TestNothingLeftNamesFilesOCRLeavesOut(t *testing.T) {
